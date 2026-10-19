@@ -38,6 +38,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Multi-LLM Code Review and Correction Engine")
     parser.add_argument("--prompt", "-p", type=str, help="Coding task requirement")
+    parser.add_argument("--file", "-f", type=str, default=None, help="Existing Python file path to review and auto-fix")
     parser.add_argument("--provider", type=str, default=None, choices=["ollama", "huggingface", "openai_compat", "mock"], help="LLM Provider")
     parser.add_argument("--generator", "-g", type=str, default=None, help="LLM 1 (Generator) Model Name")
     parser.add_argument("--reviewer", "-r", type=str, default=None, help="LLM 2 (Reviewer) Model Name")
@@ -48,6 +49,16 @@ def main():
     parser.add_argument("--demo", action="store_true", help="Run quick preconfigured offline simulation demo")
 
     args = parser.parse_args()
+
+    existing_code = None
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                existing_code = f.read()
+            console.print(f"[bold green][OK] Loaded file '{args.file}' for review and repair ({len(existing_code.splitlines())} lines).[/bold green]")
+        except Exception as e:
+            console.print(f"[bold red]Error reading file '{args.file}': {e}[/bold red]")
+            sys.exit(1)
 
     # Determine Provider and models
     provider_type = args.provider
@@ -71,8 +82,14 @@ def main():
 
     task_prompt = args.prompt
     if not task_prompt:
-        console.print("\n[bold yellow]Enter your coding task specification:[/bold yellow]")
-        task_prompt = input(">>> ").strip()
+        if existing_code:
+            task_prompt = f"Audit and repair code from file: {args.file}"
+        else:
+            console.print("\n[bold yellow]Enter your coding task specification:[/bold yellow]")
+            task_prompt = input(">>> ").strip()
+            if not task_prompt:
+                task_prompt = "Write a python function to calculate the factorial of a number."
+                console.print(f"[dim]No prompt entered. Using default: '{task_prompt}'[/dim]")
         if not task_prompt:
             task_prompt = "Write a python function to calculate the factorial of a number."
             console.print(f"[dim]No prompt entered. Using default: '{task_prompt}'[/dim]")
@@ -174,6 +191,7 @@ def main():
         task_prompt=task_prompt,
         target_language="python",
         unit_tests=args.tests,
+        existing_code=existing_code,
         on_event=on_event
     )
 

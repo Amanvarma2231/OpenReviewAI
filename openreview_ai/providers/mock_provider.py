@@ -121,6 +121,27 @@ if __name__ == '__main__':
     assert is_palindrome(None) == False
     print("All palindrome test cases passed successfully!")
 '''
+        elif "eval(" in user_prompt or "exec(" in user_prompt:
+            fixed_code = '''import ast
+from typing import Any
+
+def safe_evaluate(expression: str) -> Any:
+    """
+    Safely evaluates literal expressions without using unsafe eval().
+    Prevents remote code execution vulnerabilities (CWE-95).
+    """
+    if not isinstance(expression, str):
+        raise TypeError("Input must be a string expression.")
+    try:
+        return ast.literal_eval(expression.strip())
+    except (ValueError, SyntaxError) as e:
+        raise ValueError(f"Unsafe or invalid expression: {e}")
+
+if __name__ == '__main__':
+    assert safe_evaluate("[1, 2, 3]") == [1, 2, 3]
+    assert safe_evaluate("{'status': 'ok'}") == {'status': 'ok'}
+    print("Safe evaluation passed security assertions!")
+'''
         elif "factorial" in user_prompt.lower():
             fixed_code = '''def factorial(n: int) -> int:
     """
@@ -181,8 +202,27 @@ if __name__ == '__main__':
 
     def _generate_reviewer_response(self, user_prompt: str) -> str:
         """Reviews code: flags bugs in initial code, approves fixed code."""
+        # Check for dangerous security anti-patterns
+        if "eval(" in user_prompt or "exec(" in user_prompt:
+            review_json = {
+                "has_bugs": True,
+                "status": "CHANGES_REQUESTED",
+                "overall_score": 3,
+                "summary": "CRITICAL SECURITY FLAW: Unsafe code execution via eval/exec detected.",
+                "bugs": [
+                    {
+                        "line_number": 3,
+                        "category": "SECURITY",
+                        "severity": "CRITICAL",
+                        "description": "Use of eval() introduces arbitrary remote code execution vulnerability (CWE-95).",
+                        "suggested_fix": "Replace eval() with safe parsing (e.g., ast.literal_eval or type-cast)."
+                    }
+                ]
+            }
+            return f"Security review identified critical vulnerabilities:\n\n```json\n{json.dumps(review_json, indent=2)}\n```"
+
         # If code already contains proper edge-case handling or defensive checks:
-        if "isinstance(" in user_prompt or "cleaned = " in user_prompt or "raise ValueError" in user_prompt or "None" in user_prompt:
+        if "isinstance(" in user_prompt or "cleaned = " in user_prompt or "raise ValueError" in user_prompt or "ast.literal_eval" in user_prompt:
             review_json = {
                 "has_bugs": False,
                 "status": "APPROVED",

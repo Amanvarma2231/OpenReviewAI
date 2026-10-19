@@ -1,336 +1,592 @@
 import os
+import io
 import json
+import time
 import streamlit as st
 from datetime import datetime
 
 from openreview_ai.config import WorkflowConfig, OPENSOURCE_MODEL_FAMILIES
 from openreview_ai.engine import WorkflowOrchestrator
-from openreview_ai.schema import WorkflowResult, ReviewStatus, SeverityLevel
+from openreview_ai.schema import WorkflowResult, ReviewStatus, SeverityLevel, BugCategory
 from openreview_ai.utils.diff_viewer import compute_unified_diff
 from openreview_ai.utils.report_exporter import export_markdown_report
 from openreview_ai.providers.ollama import OllamaProvider
+from openreview_ai.sandbox.syntax_checker import check_syntax
 
-# Set Page Config
+# Page Configuration
 st.set_page_config(
-    page_title="OpenReviewAI - Multi-LLM Code Review & Correction",
+    page_title="OpenReviewAI — Enterprise Multi-LLM Code Review Studio",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling
+# Custom High-End Enterprise Styling
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.3rem;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    .hero-container {
+        background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 1.8rem 2.2rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+    }
+    .hero-title {
+        color: #F8FAFC;
+        font-size: 2.1rem;
         font-weight: 700;
-        color: #1E3A8A;
+        letter-spacing: -0.02em;
+        margin-bottom: 0.3rem;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+    }
+    .hero-subtitle {
+        color: #94A3B8;
+        font-size: 0.98rem;
+        margin-bottom: 1rem;
+    }
+    .badge-bar {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+    }
+    .model-pill {
+        background-color: rgba(59, 130, 246, 0.15);
+        color: #60A5FA;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        padding: 0.22rem 0.65rem;
+        border-radius: 9999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .status-pill-ok {
+        background-color: rgba(16, 185, 129, 0.15);
+        color: #34D399;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        padding: 0.22rem 0.65rem;
+        border-radius: 9999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+    }
+    .agent-box {
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 1rem;
+        background: #FFFFFF;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        height: 100%;
+    }
+    .agent-header {
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #1E293B;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
         margin-bottom: 0.2rem;
     }
-    .sub-header {
-        font-size: 1.05rem;
-        color: #4B5563;
-        margin-bottom: 1.5rem;
-    }
-    .agent-card {
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin-bottom: 1rem;
-        border-left: 6px solid #3B82F6;
-        background-color: #F8FAFC;
-    }
-    .badge-approved {
-        background-color: #DEF7EC;
-        color: #03543F;
-        padding: 0.25rem 0.6rem;
-        border-radius: 9999px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .badge-changes {
-        background-color: #FDE8E8;
-        color: #9B1C1C;
-        padding: 0.25rem 0.6rem;
-        border-radius: 9999px;
-        font-weight: 600;
-        font-size: 0.85rem;
+    .agent-model {
+        font-size: 0.8rem;
+        color: #64748B;
+        font-family: 'JetBrains Mono', monospace;
     }
     .badge-critical {
-        background-color: #EF4444;
-        color: white;
-        padding: 0.15rem 0.4rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: bold;
+        background-color: #FEE2E2;
+        color: #991B1B;
+        border: 1px solid #F87171;
+        padding: 0.18rem 0.5rem;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 700;
     }
     .badge-major {
-        background-color: #F59E0B;
-        color: white;
-        padding: 0.15rem 0.4rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: bold;
+        background-color: #FEF3C7;
+        color: #92400E;
+        border: 1px solid #FBBF24;
+        padding: 0.18rem 0.5rem;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 700;
     }
     .badge-minor {
-        background-color: #3B82F6;
-        color: white;
-        padding: 0.15rem 0.4rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: bold;
+        background-color: #DBEAFE;
+        color: #1E40AF;
+        border: 1px solid #93C5FD;
+        padding: 0.18rem 0.5rem;
+        border-radius: 6px;
+        font-size: 0.72rem;
+        font-weight: 700;
+    }
+    .metric-card {
+        background: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        border-radius: 10px;
+        padding: 1rem;
+        text-align: center;
+    }
+    .metric-val {
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: #0F172A;
+    }
+    .metric-lbl {
+        font-size: 0.82rem;
+        color: #64748B;
+        margin-top: 0.2rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-# Sidebar Configuration
-st.sidebar.title("⚙️ Engine Configuration")
+# Pre-flight Ollama Environment Check
+def check_ollama_status():
+    ollama = OllamaProvider("check")
+    if ollama.check_health():
+        models = ollama.get_available_models()
+        return True, models
+    return False, []
 
-# Provider Selection
-provider_option = st.sidebar.selectbox(
-    "LLM Provider",
-    options=["mock", "ollama", "huggingface", "openai_compat"],
+ollama_online, installed_ollama_models = check_ollama_status()
+
+
+# Sidebar Configuration Panel
+st.sidebar.markdown("### ⚙️ Engine Settings")
+
+provider_choice = st.sidebar.selectbox(
+    "Inference Provider",
+    options=["mock", "ollama", "openai_compat", "huggingface"],
     format_func=lambda x: {
-        "mock": "⚡ Smart Simulator (Instant Demo / Offline)",
-        "ollama": "🦙 Ollama (Local Open-Source Runner)",
-        "huggingface": "🤗 Hugging Face Inference API",
-        "openai_compat": "🌐 OpenAI-Compatible API (Groq / DeepSeek / vLLM)"
+        "mock": "⚡ Smart Simulator (Instant Demo / Zero Setup)",
+        "ollama": "🦙 Local Ollama (Self-Hosted Private LLMs)",
+        "openai_compat": "🌐 OpenAI-Compatible (Groq / DeepSeek / vLLM)",
+        "huggingface": "🤗 Hugging Face Inference API"
     }.get(x, x),
-    index=0
+    index=0 if not ollama_online or not installed_ollama_models else 1
 )
 
-# Model Presets (as specified by Druidot Consulting: Gemma, Mistral, Bonsai, Qwen, DeepSeek)
-st.sidebar.subheader("🤖 Model Selection (Open-Source)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 Multi-LLM Role Assignment")
+st.sidebar.caption("Open-source models specified by Druidot Consulting:")
 
-flat_models = WorkflowConfig.get_supported_model_list()
+all_models = WorkflowConfig.get_supported_model_list()
 
+# LLM 1: Generator
 generator_model = st.sidebar.selectbox(
-    "LLM 1: Code Generator",
-    options=["qwen2.5:0.5b", "qwen2.5-coder:1.5b", "deepseek-coder:1.3b", "gemma2:2b", "mistral:latest"] + [m for m in flat_models if m not in ["qwen2.5:0.5b", "qwen2.5-coder:1.5b", "deepseek-coder:1.3b", "gemma2:2b", "mistral:latest"]],
+    "LLM 1: Generator (Coder & Fixer)",
+    options=["qwen2.5:0.5b", "qwen2.5-coder:1.5b", "deepseek-coder:1.3b", "gemma2:2b", "mistral:latest"] + all_models,
     index=0,
-    help="Responsible for generating initial code and refactoring bugs."
+    help="Generates code and applies refactoring fixes based on reviewer comments."
 )
 
+# LLM 2: Reviewer
 reviewer_model = st.sidebar.selectbox(
-    "LLM 2: Code Reviewer",
-    options=["mistral:latest", "gemma2:2b", "deepseek-coder:1.3b", "qwen2.5-coder:1.5b"] + [m for m in flat_models if m not in ["mistral:latest", "gemma2:2b", "deepseek-coder:1.3b", "qwen2.5-coder:1.5b"]],
+    "LLM 2: Reviewer (Inspector)",
+    options=["mistral:latest", "gemma2:2b", "deepseek-coder:1.3b", "qwen2.5-coder:1.5b"] + all_models,
     index=0,
-    help="Performs strict code review, identifying edge cases and algorithmic flaws."
+    help="Performs static analysis, detects logic flaws, edge cases, and runtime bugs."
 )
 
-enable_validator = st.sidebar.checkbox("Enable LLM 3 (Validator / Arbiter)", value=True)
-validator_model = None
+# LLM 3: Validator
+enable_validator = st.sidebar.checkbox("Enable LLM 3: Security & Arbiter", value=True)
+validator_model = "deepseek-coder:1.3b"
 if enable_validator:
     validator_model = st.sidebar.selectbox(
-        "LLM 3: Security & Arbiter",
-        options=["deepseek-coder:1.3b", "bonsai:latest", "gemma2:2b", "mistral:latest"] + [m for m in flat_models if m not in ["deepseek-coder:1.3b", "bonsai:latest", "gemma2:2b", "mistral:latest"]],
+        "LLM 3: Security Auditor & Consensus",
+        options=["deepseek-coder:1.3b", "bonsai:latest", "gemma2:2b", "mistral:latest"] + all_models,
         index=0,
-        help="Audits security risks and confirms review consensus."
+        help="Validates security (CWE/OWASP), checks edge cases, and confirms reviewer consensus."
     )
 
-# Execution Controls
-st.sidebar.subheader("🔄 Loop Controls")
-max_retries = st.sidebar.slider("Maximum Review Cycles (Retries)", min_value=1, max_value=6, value=3)
-enable_sandbox = st.sidebar.checkbox("Enable Automated Sandbox Testing", value=True)
-temperature = st.sidebar.slider("Sampling Temperature", min_value=0.0, max_value=1.0, value=0.2, step=0.05)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔄 Convergence & Guardrails")
+max_retries = st.sidebar.slider("Retry Limit (Max Review Cycles)", min_value=1, max_value=5, value=3)
+enable_sandbox = st.sidebar.checkbox("Automated Subprocess Sandbox Testing", value=True)
+temperature = st.sidebar.slider("Model Temperature", min_value=0.0, max_value=0.8, value=0.2, step=0.05)
 
-# Optional credentials if provider requires
-if provider_option == "huggingface":
-    hf_token = st.sidebar.text_input("Hugging Face API Token", type="password")
-    if hf_token:
-        os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
-elif provider_option == "openai_compat":
-    api_base = st.sidebar.text_input("Base URL", value="https://api.groq.com/openai/v1")
-    api_key = st.sidebar.text_input("API Key", type="password")
+# Credentials if external provider
+if provider_choice == "openai_compat":
+    st.sidebar.markdown("#### Cloud Provider Keys")
+    api_base = st.sidebar.text_input("Base URL", value=os.getenv("OPENAI_COMPATIBLE_BASE_URL", "https://api.groq.com/openai/v1"))
+    api_key = st.sidebar.text_input("API Key", type="password", value=os.getenv("OPENAI_COMPATIBLE_API_KEY", ""))
     if api_base:
         os.environ["OPENAI_COMPATIBLE_BASE_URL"] = api_base
     if api_key:
         os.environ["OPENAI_COMPATIBLE_API_KEY"] = api_key
+elif provider_choice == "huggingface":
+    st.sidebar.markdown("#### Hugging Face Token")
+    hf_token = st.sidebar.text_input("HF Token", type="password", value=os.getenv("HUGGINGFACEHUB_API_TOKEN", ""))
+    if hf_token:
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
 
 
-# Main Header
-st.markdown('<div class="main-header">🛡️ OpenReviewAI Studio</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Multi-LLM Collaborative Code Generation, Automated Review & Iterative Bug Correction Engine</div>', unsafe_allow_html=True)
+# Main Hero Banner
+st.markdown("""
+<div class="hero-container">
+    <div class="hero-title">
+        🛡️ OpenReviewAI Enterprise Studio
+    </div>
+    <div class="hero-subtitle">
+        Autonomous Multi-LLM Collaborative Code Generation, Automated Static Analysis & Iterative Self-Healing Loop
+    </div>
+    <div class="badge-bar">
+        <span class="model-pill">Qwen 2.5</span>
+        <span class="model-pill">DeepSeek Coder</span>
+        <span class="model-pill">Mistral 7B</span>
+        <span class="model-pill">Gemma 2</span>
+        <span class="model-pill">Bonsai</span>
+        <span class="status-pill-ok">● Enterprise Sandbox Active</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-# Preset Templates
-preset_tasks = {
-    "Palindrome Checker (Edge-case flaw)": "Write a python function to check if a string is a palindrome. It must ignore punctuation, casing, and spaces, and handle empty or None input gracefully.",
-    "Factorial Calculator (Recursion edge cases)": "Write a python function to compute the factorial of an integer. Must handle 0, 1, and raise a ValueError for negative numbers.",
-    "Fibonacci Sequence": "Write a python function to return the nth Fibonacci number with O(n) time complexity and O(1) space complexity.",
-    "Even Numbers Squared Filter": "Write a python function solve_task(data) that filters even numbers and returns their squares. Must handle None and empty list safely.",
-    "Custom Prompt": ""
-}
 
-selected_preset = st.selectbox("💡 Quick Task Templates", list(preset_tasks.keys()), index=0)
+# Live Agent Persona Visualizer
+col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+with col_a1:
+    st.markdown(f"""
+    <div class="agent-box">
+        <div class="agent-header">👨‍💻 LLM 1: Coder Agent</div>
+        <div class="agent-model">{generator_model}</div>
+        <p style="font-size: 0.78rem; color: #64748B; margin-top: 0.4rem;">Generates code & executes targeted bug refactoring.</p>
+    </div>
+    """, unsafe_allow_html=True)
+with col_a2:
+    st.markdown(f"""
+    <div class="agent-box">
+        <div class="agent-header">🧐 LLM 2: Code Reviewer</div>
+        <div class="agent-model">{reviewer_model}</div>
+        <p style="font-size: 0.78rem; color: #64748B; margin-top: 0.4rem;">Static logic analysis, boundary checks, and code scoring.</p>
+    </div>
+    """, unsafe_allow_html=True)
+with col_a3:
+    st.markdown(f"""
+    <div class="agent-box">
+        <div class="agent-header">🛡️ LLM 3: Security Arbiter</div>
+        <div class="agent-model">{validator_model if enable_validator else 'Disabled'}</div>
+        <p style="font-size: 0.78rem; color: #64748B; margin-top: 0.4rem;">Security vulnerability audit and consensus agreement.</p>
+    </div>
+    """, unsafe_allow_html=True)
+with col_a4:
+    st.markdown(f"""
+    <div class="agent-box">
+        <div class="agent-header">⚡ Isolated Sandbox</div>
+        <div class="agent-model">Python AST + Subprocess</div>
+        <p style="font-size: 0.78rem; color: #64748B; margin-top: 0.4rem;">Timeout guards, runtime exception & test runner.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-default_prompt = preset_tasks[selected_preset] if selected_preset != "Custom Prompt" else ""
-task_prompt = st.text_area(
-    "Task Requirements / Specification",
-    value=default_prompt,
-    height=120,
-    placeholder="Describe the function, algorithm, or script you want the multi-LLM team to build..."
+st.write("")
+
+# Dual Mode Tabs: (1) Prompt to Code, (2) Direct Code Audit & Repair
+mode_selection = st.radio(
+    "Workflow Execution Mode",
+    ["Mode 1: 💡 Feature Specification to Production Code", "Mode 2: 🛠️ Direct File Audit & Automated Bug Repair"],
+    horizontal=True
 )
 
-with st.expander("🧪 Optional: Automated Unit Tests (Test Suite)"):
-    unit_tests = st.text_area(
-        "Unit Test Assertions (appended to code in sandbox)",
-        value="",
-        height=90,
-        placeholder="assert is_palindrome('A man, a plan, a canal: Panama') == True\nassert is_palindrome(None) == False"
+existing_code_input = None
+task_prompt_input = ""
+
+if "Mode 1" in mode_selection:
+    col_preset, col_lang = st.columns([3, 1])
+    with col_preset:
+        preset_options = {
+            "Palindrome Normalization (Edge cases & punctuation)": "Write a python function is_palindrome(s) to check if a string is a palindrome. It must ignore punctuation, casing, and whitespace, and safely handle None and empty string.",
+            "Factorial Calculator (Boundary & negative inputs)": "Write a python function factorial(n) that computes n! using recursion or iteration, handling 0, 1, and raising ValueError on negative inputs.",
+            "Fibonacci Generator (Time O(n), Space O(1))": "Write a python function fibonacci(n) that returns the nth Fibonacci number with O(n) time and O(1) space complexity.",
+            "List Data Cleaner & Square Filter": "Write a python function solve_task(data) that filters even numbers and returns their squares, gracefully handling None and mixed types.",
+            "Custom Task": ""
+        }
+        chosen_preset = st.selectbox("Quick Enterprise Templates", list(preset_options.keys()), index=0)
+    with col_lang:
+        target_language = st.selectbox("Language", ["python", "javascript", "go", "cpp"], index=0)
+
+    task_prompt_input = st.text_area(
+        "Feature Specification / Task Prompt",
+        value=preset_options[chosen_preset] if chosen_preset != "Custom Task" else "",
+        height=100,
+        placeholder="Enter your algorithm, function, or software requirement here..."
     )
 
-start_button = st.button("🚀 Start Multi-LLM Review Workflow", type="primary", use_container_width=True)
+    with st.expander("🧪 Add Custom Unit Test Assertions (Optional)"):
+        custom_tests = st.text_area(
+            "Assertions executed inside isolated sandbox",
+            value="",
+            height=80,
+            placeholder="assert is_palindrome('A man, a plan, a canal: Panama') == True\nassert is_palindrome(None) == False"
+        )
+else:
+    # Mode 2: Direct File / Code Review
+    st.info("Upload or paste any Python script. LLM 2 & LLM 3 will audit it for bugs/security flaws, and LLM 1 will repair it automatically!")
+    
+    col_up, col_paste = st.columns([1, 2])
+    with col_up:
+        uploaded_file = st.file_uploader("Upload Python File (.py)", type=["py"])
+    with col_paste:
+        sample_buggy_code = """# Legacy Code with Security & Runtime Flaws
+def process_user_query(raw_expr):
+    # Unsafe evaluation vulnerability
+    return eval(raw_expr)
 
-# Session State for storing workflow results
+if __name__ == '__main__':
+    print(process_user_query("[1, 2, 3]"))
+"""
+        pasted_code = st.text_area("Or Paste Code Directly", value=uploaded_file.getvalue().decode("utf-8") if uploaded_file else sample_buggy_code, height=140)
+
+    existing_code_input = pasted_code
+    task_prompt_input = "Perform comprehensive code review, fix security vulnerabilities, handle edge cases, and add type hints and docstrings."
+    custom_tests = None
+    target_language = "python"
+
+
+# Launch Action Button
+launch_col1, launch_col2 = st.columns([3, 1])
+with launch_col1:
+    start_btn = st.button("🚀 Run Multi-LLM Review & Correction Workflow", type="primary", use_container_width=True)
+with launch_col2:
+    if st.button("🔄 Reset Studio", use_container_width=True):
+        st.session_state.workflow_result = None
+        st.rerun()
+
+# Session State
 if "workflow_result" not in st.session_state:
     st.session_state.workflow_result = None
 
-if start_button:
-    if not task_prompt.strip():
-        st.error("Please enter a task specification before launching the workflow.")
+
+# Workflow Execution Handler
+if start_btn:
+    if not task_prompt_input.strip() and not existing_code_input:
+        st.error("Please provide a task prompt or code to review!")
     else:
         config = WorkflowConfig(
-            provider_type=provider_option,
+            provider_type=provider_choice,
             generator_model=generator_model,
             reviewer_model=reviewer_model,
-            validator_model=validator_model or "",
+            validator_model=validator_model if enable_validator else "",
             max_retries=max_retries,
             enable_sandbox_execution=enable_sandbox,
             enable_third_llm_validator=enable_validator,
             temperature=temperature
         )
 
-        progress_bar = st.progress(0, text="Initializing Multi-LLM Agents...")
-        status_box = st.empty()
+        progress_container = st.container()
+        with progress_container:
+            p_bar = st.progress(0, text="Initializing Multi-LLM Agents...")
+            log_placeholder = st.empty()
 
         def on_event(event_name: str, data: dict):
             if event_name == "generation_started":
-                progress_bar.progress(15, text=f"Round {data.get('round')}: LLM 1 ({generator_model}) is generating code...")
+                p_bar.progress(15, text=f"Round {data.get('round')}: LLM 1 ({generator_model}) is generating solution...")
             elif event_name == "generation_completed":
-                progress_bar.progress(35, text="Initial code generated. Passing to verification...")
+                p_bar.progress(35, text="Code generated. Running AST checks & sandbox verification...")
             elif event_name == "execution_started":
-                progress_bar.progress(45, text=f"Running Round {data.get('round')} code in safe sandbox...")
+                p_bar.progress(45, text=f"Executing code in subprocess sandbox...")
             elif event_name == "review_started":
-                progress_bar.progress(60, text=f"LLM 2 ({reviewer_model}) is conducting code review...")
+                p_bar.progress(65, text=f"LLM 2 ({reviewer_model}) is conducting static inspection...")
             elif event_name == "validation_started":
-                progress_bar.progress(75, text=f"LLM 3 ({validator_model}) is conducting security audit...")
+                p_bar.progress(78, text=f"LLM 3 ({validator_model}) is running security audit...")
             elif event_name == "fix_started":
-                progress_bar.progress(85, text=f"Bugs detected! Passing feedback to LLM 1 for Round {data.get('round')} fixes...")
+                p_bar.progress(88, text=f"Bugs detected! Passing feedback to LLM 1 for Round {data.get('round')} refactoring...")
             elif event_name == "workflow_completed":
-                progress_bar.progress(100, text="Workflow completed!")
+                p_bar.progress(100, text="Workflow converged successfully!")
 
         try:
-            with st.spinner("Multi-LLM Debate and Review in progress..."):
+            with st.spinner("Multi-LLM Debate and Iterative Repair in progress..."):
                 orchestrator = WorkflowOrchestrator(config=config)
                 result = orchestrator.run(
-                    task_prompt=task_prompt,
-                    target_language="python",
-                    unit_tests=unit_tests if unit_tests.strip() else None,
+                    task_prompt=task_prompt_input,
+                    target_language=target_language,
+                    unit_tests=custom_tests if custom_tests and custom_tests.strip() else None,
+                    existing_code=existing_code_input,
                     on_event=on_event
                 )
                 st.session_state.workflow_result = result
-                st.success(f"Workflow Complete: Status `{result.status}` in {result.rounds_count} round(s)!")
+                st.toast("Workflow converged successfully!", icon="✅")
         except Exception as e:
-            st.error(f"Error executing workflow: {str(e)}")
-            if provider_option == "ollama":
-                st.info("Tip: If local Ollama has missing server binaries, switch LLM Provider to '⚡ Smart Simulator' in the sidebar to test immediately!")
+            st.error(f"Execution Error: {str(e)}")
+            if provider_choice == "ollama":
+                st.warning("Notice: If local Ollama has missing binary components, switch to '⚡ Smart Simulator' in the sidebar to test immediately!")
 
 
-# Render Results
+# Render Results Dashboard
 if st.session_state.workflow_result:
     res: WorkflowResult = st.session_state.workflow_result
 
-    st.divider()
+    st.write("---")
+    
+    # Executive Metrics Row
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-val" style="color: {'#10B981' if res.status == 'APPROVED' else '#F59E0B'};">{res.status}</div>
+            <div class="metric-lbl">Final Consensus Status</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-val">{res.rounds_count}</div>
+            <div class="metric-lbl">Debate / Fix Rounds</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-val" style="color: #EF4444;">{res.total_bugs_detected}</div>
+            <div class="metric-lbl">Bugs Detected</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-val" style="color: #10B981;">{res.total_bugs_fixed}</div>
+            <div class="metric-lbl">Bugs Resolved</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m5:
+        runtime_ms = res.final_execution.execution_time_ms if res.final_execution else 0.0
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-val">{runtime_ms:.1f}ms</div>
+            <div class="metric-lbl">Sandbox Execution Time</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Top Metrics Bar
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Workflow Status", res.status, delta="Final Result")
-    with col2:
-        st.metric("Total Iterations", f"{res.rounds_count} Round(s)")
-    with col3:
-        st.metric("Bugs Flagged", res.total_bugs_detected)
-    with col4:
-        st.metric("Bugs Resolved", res.total_bugs_fixed)
+    st.write("")
 
-    # Tabs for structured viewing
-    tab_debate, tab_diff, tab_code, tab_sandbox, tab_audit = st.tabs([
-        "💬 Multi-LLM Debate & Feedback",
-        "🔍 Code Evolution & Diffs",
+    # Result Tabs
+    t_chat, t_diff, t_code, t_metrics, t_sandbox, t_audit = st.tabs([
+        "💬 Multi-LLM Debate History",
+        "🔍 Code Evolution Diffs",
         "🏆 Final Approved Code",
-        "🧪 Sandbox Execution",
+        "📊 Enterprise Code Metrics",
+        "🧪 Sandbox Terminal",
         "📄 Audit Report & Export"
     ])
 
-    with tab_debate:
-        st.subheader("Multi-Agent Dialogue & Iteration History")
+    # Tab 1: Debate History & Bug Log
+    with t_chat:
+        st.markdown("### 💬 Agent Dialogue & Feedback Cycles")
         for step in res.iterations:
-            with st.expander(f"📍 Round {step.round_idx} - Status: `{step.status}`", expanded=(step.round_idx == len(res.iterations)-1)):
-                st.markdown(f"**LLM 1 (Generator - `{res.generator_model}`) Explanation:**")
-                st.info(step.generator_explanation or "Initial implementation.")
+            is_last = (step.round_idx == len(res.iterations) - 1)
+            with st.expander(f"📍 Round {step.round_idx} — Status: {step.status}", expanded=is_last):
+                col_exp_1, col_exp_2 = st.columns([1, 1])
+                with col_exp_1:
+                    st.markdown("**👨‍💻 LLM 1 (Generator / Fixer) Response:**")
+                    st.info(step.generator_explanation or "Initial implementation generated.")
+                with col_exp_2:
+                    st.markdown("**🧐 Reviewer & Security Evaluations:**")
+                    for rev in step.reviews:
+                        score_color = "#10B981" if rev.overall_score >= 8 else "#F59E0B"
+                        st.markdown(f"**{rev.reviewer_name}** (`{rev.reviewer_model}`): <span style='font-weight:700; color:{score_color}'>Score {rev.overall_score}/10</span>", unsafe_allow_html=True)
+                        st.caption(rev.summary)
 
-                st.markdown("**Reviewer Feedback & Bug Reports:**")
+                # Bug List Table
+                all_step_bugs = []
                 for rev in step.reviews:
-                    status_badge = '<span class="badge-approved">APPROVED</span>' if rev.status == ReviewStatus.APPROVED else '<span class="badge-changes">CHANGES REQUESTED</span>'
-                    st.markdown(f"**{rev.reviewer_name}** (`{rev.reviewer_model}`): {status_badge} — *Score: {rev.overall_score}/10*", unsafe_allow_html=True)
-                    st.write(rev.summary)
+                    all_step_bugs.extend(rev.bugs)
 
-                    if rev.bugs:
-                        st.markdown(f"##### Issues Identified ({len(rev.bugs)}):")
-                        for bug in rev.bugs:
-                            sev_class = f"badge-{bug.severity.lower()}"
-                            line_str = f"Line {bug.line_number}: " if bug.line_number else ""
-                            st.markdown(
-                                f"- <span class=\"{sev_class}\">{bug.severity}</span> `[{bug.category}]` {line_str}**{bug.description}**<br/>"
-                                f"  *Suggested Fix:* `{bug.suggested_fix}`",
-                                unsafe_allow_html=True
-                            )
+                if all_step_bugs:
+                    st.markdown("##### 🐛 Issues Identified in this Round:")
+                    for b in all_step_bugs:
+                        badge_style = f"badge-{b.severity.lower()}"
+                        line_info = f"Line {b.line_number}: " if b.line_number else ""
+                        st.markdown(f"""
+                        <div style="padding: 0.6rem 0.8rem; background: #F8FAFC; border-left: 4px solid #EF4444; margin-bottom: 0.4rem; border-radius: 4px;">
+                            <span class="{badge_style}">{b.severity}</span> 
+                            <strong style="color: #1E293B; margin-left: 0.4rem;">[{b.category}]</strong> {line_info}{b.description}<br/>
+                            <span style="font-size: 0.82rem; color: #16A34A; font-family: monospace;">Suggested Fix: {b.suggested_fix}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-    with tab_diff:
-        st.subheader("Code Changes Across Iterations")
+    # Tab 2: Code Diffs
+    with t_diff:
+        st.markdown("### 🔍 Code Refactoring Across Rounds")
         if len(res.iterations) > 1:
-            initial = res.iterations[0].code
-            final = res.final_code
-            diff_text = compute_unified_diff(initial, final, "Round 0 (Initial)", f"Round {res.rounds_count} (Final)")
+            initial_code = res.iterations[0].code
+            diff_text = compute_unified_diff(initial_code, res.final_code, "Original Code (Round 0)", f"Refactored Code (Round {res.rounds_count-1})")
             st.code(diff_text, language="diff")
         else:
-            st.info("The code was approved on the first round without requiring code modifications!")
+            st.success("The code was verified and approved on the first round without requiring code modifications!")
 
-    with tab_code:
-        st.subheader("Final Validated Source Code")
+    # Tab 3: Final Code
+    with t_code:
+        st.markdown("### 🏆 Final Verified Production Code")
         st.code(res.final_code, language=res.target_language)
-        st.download_button(
-            "⬇️ Download Python Script",
-            data=res.final_code,
-            file_name="solution.py",
-            mime="text/x-python"
-        )
+        
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.download_button(
+                "⬇️ Download Solution (.py)",
+                data=res.final_code,
+                file_name="solution.py",
+                mime="text/x-python",
+                use_container_width=True
+            )
+        with col_d2:
+            st.download_button(
+                "⬇️ Download Full Audit Report (.md)",
+                data=export_markdown_report(res),
+                file_name=f"audit_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
 
-    with tab_sandbox:
-        st.subheader("Sandbox Execution & Unit Tests")
+    # Tab 4: Enterprise AST Metrics
+    with t_metrics:
+        st.markdown("### 📊 Enterprise Code Quality & Security Scan")
+        is_valid, err, meta = check_syntax(res.final_code, res.target_language)
+        
+        q1, q2, q3, q4 = st.columns(4)
+        with q1:
+            st.metric("Security Score", f"{meta.get('security_score', 100)}/100", delta="Clean" if meta.get('security_score', 100) == 100 else "Flagged")
+        with q2:
+            st.metric("Cyclomatic Complexity", meta.get("cyclomatic_complexity", 1))
+        with q3:
+            st.metric("Functions", meta.get("num_functions", 0))
+        with q4:
+            st.metric("Lines of Code", meta.get("lines_of_code", 0))
+
+        if meta.get("security_flags"):
+            st.warning("Security Findings:")
+            for flag in meta["security_flags"]:
+                st.write(f"- ⚠️ {flag}")
+        else:
+            st.success("✅ No dangerous built-ins (eval, exec, injection vectors) detected in final source.")
+
+        st.json(meta)
+
+    # Tab 5: Sandbox Terminal
+    with t_sandbox:
+        st.markdown("### 🧪 Sandbox Execution Output")
         if res.final_execution:
             fe = res.final_execution
             if fe.success:
-                st.success(f"Sandbox Execution Passed! (Runtime: {fe.execution_time_ms:.2f}ms)")
+                st.success(f"Execution Passed cleanly in {fe.execution_time_ms:.1f}ms (Exit Code: {fe.exit_code})")
             else:
-                st.error(f"Sandbox Execution Failed (Exit Code: {fe.exit_code})")
-
+                st.error(f"Execution Failed with Exit Code: {fe.exit_code}")
+                
             st.markdown("**Standard Output (stdout):**")
-            st.code(fe.stdout if fe.stdout else "(No output)")
-
-            if fe.stderr:
+            st.code(fe.stdout if fe.stdout.strip() else "(No standard output)")
+            
+            if fe.stderr.strip():
                 st.markdown("**Standard Error (stderr):**")
                 st.code(fe.stderr)
         else:
-            st.info("Automated sandbox execution was disabled for this run.")
+            st.info("Sandbox execution was disabled in configuration.")
 
-    with tab_audit:
-        st.subheader("Comprehensive Audit Trail")
-        report_md = export_markdown_report(res)
-        st.markdown(report_md)
-        st.download_button(
-            "⬇️ Download Markdown Audit Report",
-            data=report_md,
-            file_name=f"audit_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-            mime="text/markdown"
-        )
+    # Tab 6: Audit Report
+    with t_audit:
+        st.markdown("### 📄 Full Audit Trail Report")
+        report_text = export_markdown_report(res)
+        st.markdown(report_text)

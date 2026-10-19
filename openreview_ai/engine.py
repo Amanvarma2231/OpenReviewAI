@@ -73,6 +73,7 @@ class WorkflowOrchestrator:
         task_prompt: str,
         target_language: str = "python",
         unit_tests: Optional[str] = None,
+        existing_code: Optional[str] = None,
         on_event: Optional[Callable[[str, dict], None]] = None
     ) -> WorkflowResult:
         """
@@ -82,6 +83,7 @@ class WorkflowOrchestrator:
             task_prompt: The coding prompt or user requirement.
             target_language: Target programming language (default: python).
             unit_tests: Optional unit test assertions for automated verification.
+            existing_code: Optional existing code string to review and repair.
             on_event: Optional callback function receiving (event_name, data_dict).
         """
         def emit(event_name: str, data: dict):
@@ -108,25 +110,38 @@ class WorkflowOrchestrator:
         })
 
         # ==========================================
-        # STEP 1: Initial Code Generation by LLM 1
+        # STEP 1: Code Ingestion / Initial Generation
         # ==========================================
-        emit("generation_started", {"round": 0, "agent": self.generator.role_name})
-        initial_code, explanation, raw_gen = self.generator.generate_initial(
-            task_prompt=task_prompt,
-            target_language=target_language,
-            unit_tests=unit_tests,
-            temperature=self.config.temperature
-        )
-        state.current_code = initial_code
+        if existing_code and existing_code.strip():
+            initial_code = existing_code.strip()
+            explanation = "Loaded existing source file for audit and auto-repair."
+            state.current_code = initial_code
+            state.messages.append(AgentMessage(
+                sender_role="User/System",
+                sender_model="Original Code",
+                round_idx=0,
+                content=explanation,
+                metadata={"code": initial_code}
+            ))
+            emit("generation_completed", {"round": 0, "code": initial_code, "explanation": explanation})
+        else:
+            emit("generation_started", {"round": 0, "agent": self.generator.role_name})
+            initial_code, explanation, raw_gen = self.generator.generate_initial(
+                task_prompt=task_prompt,
+                target_language=target_language,
+                unit_tests=unit_tests,
+                temperature=self.config.temperature
+            )
+            state.current_code = initial_code
 
-        state.messages.append(AgentMessage(
-            sender_role="Generator",
-            sender_model=self.generator.model_name,
-            round_idx=0,
-            content=f"Initial code generated:\n\n{explanation}",
-            metadata={"code": initial_code}
-        ))
-        emit("generation_completed", {"round": 0, "code": initial_code, "explanation": explanation})
+            state.messages.append(AgentMessage(
+                sender_role="Generator",
+                sender_model=self.generator.model_name,
+                round_idx=0,
+                content=f"Initial code generated:\n\n{explanation}",
+                metadata={"code": initial_code}
+            ))
+            emit("generation_completed", {"round": 0, "code": initial_code, "explanation": explanation})
 
         # ==========================================
         # STEP 2: Iterative Review & Correction Loop
