@@ -1,0 +1,15 @@
+# Core Dependencies
+pydantic>=2.0.0
+requests>=2.31.0
+rich>=13.0.0
+streamlit>=1.30.0
+pytest>=8.0.0
+python-dotenv>=1.0.0
+
+# LLM & AI Clients (Open Source / Compatible)
+openai>=1.12.0
+huggingface-hub>=0.20.0
+
+# Optional LangGraph orchestration (supported alongside direct engine)
+langchain>=0.2.0
+langgraph>=0.1.0
