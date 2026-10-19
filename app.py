@@ -15,16 +15,16 @@ from openreview_ai.sandbox.syntax_checker import check_syntax
 
 # Page Configuration
 st.set_page_config(
-    page_title="OpenReviewAI — IIT AI Systems & Multi-Agent Formal Verification Studio",
-    page_icon="🏛️",
+    page_title="OpenReviewAI — Multi-Agent Formal Code Review & Verification Studio",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom High-End Academic & Enterprise Styling (IIT Professor Lab Aesthetic)
+# Custom World-Class Styling (Professor & Enterprise Studio Aesthetic)
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -32,7 +32,7 @@ st.markdown("""
 
     /* Sidebar Styling */
     section[data-testid="stSidebar"] {
-        background-color: #0F172A;
+        background-color: #0B1120;
         border-right: 1px solid #1E293B;
     }
     section[data-testid="stSidebar"] * {
@@ -70,8 +70,8 @@ st.markdown("""
         display: block;
     }
 
-    /* Main Academic Hero Container */
-    .academic-hero {
+    /* Main Hero Banner */
+    .hero-banner {
         background: linear-gradient(135deg, #090D16 0%, #0F172A 50%, #1E293B 100%);
         border: 1px solid #334155;
         border-radius: 16px;
@@ -81,13 +81,13 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-    .academic-hero::before {
+    .hero-banner::before {
         content: "";
         position: absolute;
         top: 0; left: 0; right: 0; height: 3px;
         background: linear-gradient(90deg, #38BDF8, #818CF8, #C084FC);
     }
-    .academic-title {
+    .hero-title {
         color: #F8FAFC;
         font-size: 2.2rem;
         font-weight: 700;
@@ -97,7 +97,7 @@ st.markdown("""
         align-items: center;
         gap: 0.7rem;
     }
-    .academic-abstract {
+    .hero-abstract {
         color: #CBD5E1;
         font-size: 0.95rem;
         line-height: 1.55;
@@ -195,7 +195,7 @@ st.markdown("""
         margin-top: 0.3rem;
     }
 
-    /* Badges */
+    /* Defect Badges */
     .badge-critical {
         background-color: #FEE2E2;
         color: #991B1B;
@@ -239,21 +239,23 @@ ollama_online, installed_ollama_models = check_ollama_status()
 
 
 # ==============================================================================
-# SIDEBAR: IIT PROFESSOR & RESEARCH LAB CONTROL PANEL
+# SIDEBAR: ADVANCED CONTROL & CONFIGURATION PANEL
 # ==============================================================================
 with st.sidebar:
     st.markdown("""
     <div class="sidebar-lab-header">
-        <div class="sidebar-lab-title">🏛️ IIT AI Systems Lab</div>
-        <div class="sidebar-lab-sub">Autonomous Multi-Agent Peer-Review & Formal Verification Framework</div>
+        <div class="sidebar-lab-title">🏛️ Autonomous Systems Studio</div>
+        <div class="sidebar-lab-sub">Multi-Agent Peer-Review & Formal Verification Framework</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Telemetry Status Widget
-    if ollama_online and installed_ollama_models:
-        st.markdown(f"🟢 **Ollama Local Engine:** `Active ({len(installed_ollama_models)} weights)`")
-    else:
-        st.markdown("⚡ **Simulation / Cloud Engine:** `Ready`")
+    # Studio Mode Toggle
+    studio_mode = st.radio(
+        "Studio Operational Mode",
+        ["🎓 Professor Mode (Formal Computer Science & Invariant Analysis)", "💼 Enterprise Developer Mode (Production CI/CD & Rapid Review)"],
+        index=0
+    )
+    is_professor_mode = "Professor Mode" in studio_mode
 
     st.markdown('<span class="sidebar-section-badge">1. Execution Engine & Protocol</span>', unsafe_allow_html=True)
     provider_choice = st.selectbox(
@@ -269,7 +271,7 @@ with st.sidebar:
     )
 
     st.markdown('<span class="sidebar-section-badge">2. Heterogeneous Agent Topology</span>', unsafe_allow_html=True)
-    st.caption("Heterogeneous open-source models as required by Druidot Consulting:")
+    st.caption("Heterogeneous open-source models (Gemma, Mistral, Bonsai, Qwen, DeepSeek):")
 
     all_models = WorkflowConfig.get_supported_model_list()
 
@@ -318,36 +320,55 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("""
-    <div style="font-size: 0.7rem; color: #64748B; line-height: 1.4;">
-        <strong>Academic Reference:</strong><br/>
+    <div style="font-size: 0.72rem; color: #64748B; line-height: 1.4;">
+        <strong>System Standard:</strong><br/>
         Multi-Agent Consensus & Formal AST Code Repair Protocol.<br/>
-        IIT Research Group • MIT Licensed • 2026.
+        Global Open-Source Standard • MIT Licensed • 2026.
     </div>
     """, unsafe_allow_html=True)
 
 
 # ==============================================================================
-# MAIN PAGE: SCHOLARLY HERO & RESEARCH TOPOLOGY
+# MAIN PAGE: HERO BANNER & AGENT TOPOLOGY
 # ==============================================================================
-st.markdown("""
-<div class="academic-hero">
-    <div class="academic-title">
-        🏛️ OpenReviewAI: Multi-LLM Autonomous Peer-Review Protocol
+if is_professor_mode:
+    st.markdown("""
+    <div class="hero-banner">
+        <div class="hero-title">
+            🏛️ OpenReviewAI: Autonomous Multi-LLM Peer-Review Protocol
+        </div>
+        <div class="hero-abstract">
+            <strong>Professor Mode Specification:</strong> We formulate software generation and verification as a discrete multi-agent game between heterogeneous open-source Large Language Models (<strong>Qwen, DeepSeek, Mistral, Gemma, Bonsai</strong>). A generator agent synthesizes code, an inspector agent conducts semantic static code analysis, and a security validator arbitrates consensus. An isolated subprocess sandbox guarantees runtime safety, bound enforcement, and provable halting.
+        </div>
+        <div class="badge-bar">
+            <span class="model-badge">Agent 1: Qwen-Coder</span>
+            <span class="model-badge">Agent 2: Mistral-7B</span>
+            <span class="model-badge">Agent 3: DeepSeek-R1</span>
+            <span class="model-badge">Gemma-2</span>
+            <span class="model-badge">Bonsai</span>
+            <span class="protocol-badge">Formal Subprocess Verification</span>
+            <span class="protocol-badge">Halting Guard: K &le; 5</span>
+        </div>
     </div>
-    <div class="academic-abstract">
-        <strong>Abstract:</strong> We formulate software generation and verification as a discrete multi-agent game between heterogeneous open-source Large Language Models (<strong>Qwen, DeepSeek, Mistral, Gemma, Bonsai</strong>). A generator agent synthesizes code, an inspector agent conducts semantic static code analysis, and a security validator arbitrates consensus. An isolated subprocess sandbox guarantees runtime safety, bound enforcement, and provable halting.
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div class="hero-banner">
+        <div class="hero-title">
+            🛡️ OpenReviewAI Enterprise Studio
+        </div>
+        <div class="hero-abstract">
+            <strong>Enterprise Mode:</strong> Production-grade multi-LLM collaborative code generation, automated code review, and iterative self-healing bug correction engine using 100% open-source tools.
+        </div>
+        <div class="badge-bar">
+            <span class="model-badge">Generator: Qwen</span>
+            <span class="model-badge">Reviewer: Mistral</span>
+            <span class="model-badge">Security: DeepSeek</span>
+            <span class="protocol-badge">Automated CI/CD Sandbox</span>
+            <span class="protocol-badge">Production Verified</span>
+        </div>
     </div>
-    <div class="badge-bar">
-        <span class="model-badge">LLM-1: Qwen-Coder</span>
-        <span class="model-badge">LLM-2: Mistral-7B</span>
-        <span class="model-badge">LLM-3: DeepSeek-R1</span>
-        <span class="model-badge">Gemma-2</span>
-        <span class="model-badge">Bonsai</span>
-        <span class="protocol-badge">Formal Subprocess Verification</span>
-        <span class="protocol-badge">Halting Guard: K &le; 5</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 
 # Agent Topology Visualization Cards
@@ -431,15 +452,15 @@ if "Protocol A" in protocol_selection:
             "Benchmark 2: Recursive Factorial & Mathematical Invariants": "Write a python function factorial(n) that computes n! using recursion or iteration, handling base cases (0, 1) and raising ValueError on negative inputs.",
             "Benchmark 3: Optimal Fibonacci with O(n) Time and O(1) Space Complexity": "Write a python function fibonacci(n) that returns the nth Fibonacci number with O(n) time complexity and O(1) auxiliary space complexity.",
             "Benchmark 4: List Data Cleaner & Square Filter (Defensive Types)": "Write a python function solve_task(data) that filters even numbers and returns their squares, gracefully handling None and mixed non-integer types.",
-            "Custom Research Specification": ""
+            "Custom Engineering Specification": ""
         }
-        chosen_benchmark = st.selectbox("Computer Science Benchmark Presets", list(preset_benchmarks.keys()), index=0)
+        chosen_benchmark = st.selectbox("Benchmark Presets", list(preset_benchmarks.keys()), index=0)
     with col_lang:
         target_language = st.selectbox("Target Language", ["python", "javascript", "go", "cpp"], index=0)
 
     task_prompt_input = st.text_area(
         "Functional Specification / Prompt",
-        value=preset_benchmarks[chosen_benchmark] if chosen_benchmark != "Custom Research Specification" else "",
+        value=preset_benchmarks[chosen_benchmark] if chosen_benchmark != "Custom Engineering Specification" else "",
         height=95,
         placeholder="Enter formal software requirements, functional invariants, or algorithmic constraints..."
     )
@@ -534,7 +555,7 @@ if execute_button:
                     on_event=on_event
                 )
                 st.session_state.workflow_result = result
-                st.toast("Peer Review Protocol converged successfully!", icon="🏛️")
+                st.toast("Peer Review Protocol converged successfully!", icon="✅")
         except Exception as e:
             st.error(f"Execution Error: {str(e)}")
             if provider_choice == "ollama":

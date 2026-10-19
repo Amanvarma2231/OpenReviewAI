@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--tests", "-t", type=str, default=None, help="Unit tests code to enforce")
     parser.add_argument("--export", "-e", type=str, default="review_report.md", help="Export markdown report path")
     parser.add_argument("--demo", action="store_true", help="Run quick preconfigured offline simulation demo")
+    parser.add_argument("--professor-mode", action="store_true", help="Enable Professor Mode with formal verification telemetry and math metrics")
 
     args = parser.parse_args()
 
@@ -80,19 +81,18 @@ def main():
             provider_type = "mock"
             console.print("[yellow][INFO] Ollama not responding. Defaulting to Smart Simulation Mode.[/yellow]")
 
-    task_prompt = args.prompt
-    if not task_prompt:
-        if existing_code:
-            task_prompt = f"Audit and repair code from file: {args.file}"
-        else:
-            console.print("\n[bold yellow]Enter your coding task specification:[/bold yellow]")
-            task_prompt = input(">>> ").strip()
-            if not task_prompt:
-                task_prompt = "Write a python function to calculate the factorial of a number."
-                console.print(f"[dim]No prompt entered. Using default: '{task_prompt}'[/dim]")
+    # Determine task_prompt if not already resolved in demo
+    if not args.demo:
+        task_prompt = args.prompt
         if not task_prompt:
-            task_prompt = "Write a python function to calculate the factorial of a number."
-            console.print(f"[dim]No prompt entered. Using default: '{task_prompt}'[/dim]")
+            if existing_code:
+                task_prompt = f"Audit and repair code from file: {args.file}"
+            else:
+                console.print("\n[bold yellow]Enter your coding task specification:[/bold yellow]")
+                task_prompt = input(">>> ").strip()
+                if not task_prompt:
+                    task_prompt = "Write a python function to calculate the factorial of a number."
+                    console.print(f"[dim]No prompt entered. Using default: '{task_prompt}'[/dim]")
 
     # Resolve models
     if provider_type == "ollama":
@@ -119,15 +119,19 @@ def main():
         enable_third_llm_validator=True
     )
 
+    title = "[bold cyan]Professor Mode: Formal Peer-Review Setup[/bold cyan]" if args.professor_mode else "[bold green]Workflow Setup[/bold green]"
+    border = "cyan" if args.professor_mode else "green"
+    mode_text = "[bold magenta]Operational Mode:[/bold magenta] Professor Mode (Formal Discrete Multi-Agent Verification)\n" if args.professor_mode else ""
     console.print(Panel(
-        f"[bold]Provider:[/bold] {config.provider_type}\n"
-        f"[bold]LLM 1 (Generator):[/bold] {config.generator_model}\n"
-        f"[bold]LLM 2 (Reviewer):[/bold] {config.reviewer_model}\n"
-        f"[bold]LLM 3 (Validator):[/bold] {config.validator_model}\n"
-        f"[bold]Max Retries:[/bold] {config.max_retries}\n"
-        f"[bold]Task:[/bold] {task_prompt}",
-        title="[bold green]Workflow Setup[/bold green]",
-        border_style="green"
+        f"{mode_text}"
+        f"[bold]Subsystem Provider:[/bold] {config.provider_type}\n"
+        f"[bold]Agent 1 (A_gen - Coder):[/bold] {config.generator_model}\n"
+        f"[bold]Agent 2 (A_rev - Reviewer):[/bold] {config.reviewer_model}\n"
+        f"[bold]Agent 3 (A_val - Arbiter):[/bold] {config.validator_model}\n"
+        f"[bold]Convergence Bound (K):[/bold] {config.max_retries}\n"
+        f"[bold]Functional Specification:[/bold] {task_prompt}",
+        title=title,
+        border_style=border
     ))
 
     # Event listener for rich live rendering
