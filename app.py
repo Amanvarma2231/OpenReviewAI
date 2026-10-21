@@ -1,1484 +1,1767 @@
 """
-OpenReviewAI — Multi-LLM Code Review & Self-Correction System
-Global-level, production-ready Streamlit application.
-Developed by Aman Varma | Druidot Consulting Pvt. Ltd.
+OpenReview AI — Multi-LLM Code Generation, Review & Self-Correction System
+========================================================================
+Production-Grade Enterprise Interface.
+Developed by Aman Varma · Druidot Consulting Pvt. Ltd.
 """
 import os
 import json
 import time
+import uuid
 import base64
 import traceback
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
 
 import streamlit as st
 
 from openreview_ai.config import WorkflowConfig, OPENSOURCE_MODEL_FAMILIES
 from openreview_ai.engine import WorkflowOrchestrator
-from openreview_ai.schema import WorkflowResult, ReviewStatus, SeverityLevel
-from openreview_ai.utils.diff_viewer import compute_unified_diff
+from openreview_ai.schema import (
+    WorkflowResult,
+    IterationStep,
+    AgentMessage,
+    ReviewFeedback,
+    ExecutionResult,
+    BugItem,
+    ReviewStatus,
+    SeverityLevel,
+    BugCategory,
+)
+from openreview_ai.utils.diff_viewer import compute_unified_diff, compute_line_changes
 from openreview_ai.utils.report_exporter import export_markdown_report
 from openreview_ai.providers.ollama import OllamaProvider
 from openreview_ai.sandbox.syntax_checker import check_syntax
 
-# ─────────────────────────────────────────────────────────────────────
-#  PAGE CONFIG  (must be first Streamlit call)
-# ─────────────────────────────────────────────────────────────────────
+from models.schemas import (
+    WorkflowReport,
+    WorkflowStatus,
+    IterationRecord,
+    ReviewVerdict,
+    TestStatus,
+    SyntaxCheckResult,
+    TestExecutionResult,
+    ReviewResult,
+    ReviewIssue,
+    IssueSeverity,
+)
+from storage.history_store import HistoryStore
+from storage.report_generator import generate_markdown_report
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  1. PAGE CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+FAVICON_PATH = Path(__file__).parent / "assets" / "favicon.png"
+if not FAVICON_PATH.exists():
+    FAVICON_PATH = Path(__file__).parent / "assets" / "logo_icon.svg"
+
 st.set_page_config(
-    page_title="OpenReviewAI — Multi-LLM Code Review",
-    page_icon="🛡️",
+    page_title="OpenReview AI — Multi-LLM Code Review Studio",
+    page_icon=str(FAVICON_PATH) if FAVICON_PATH.exists() else "🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "### OpenReviewAI v1.0.0\nMulti-LLM Code Review & Auto-Correction Engine"},
+    menu_items={
+        "About": "### OpenReview AI v2.1.0\nMulti-LLM Autonomous Code Generation, Review & Self-Correction Studio.\nDeveloped by Aman Varma."
+    },
 )
 
-# ─────────────────────────────────────────────────────────────────────
-#  LOGO HELPER
-# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  2. ASSET HELPERS & LOGO
+# ─────────────────────────────────────────────────────────────────────────────
 def _svg_b64(path: str) -> str:
-    """Convert SVG file to base64 inline img src."""
+    """Converts local SVG asset to base64 inline data URI."""
     try:
-        data = Path(path).read_bytes()
-        return "data:image/svg+xml;base64," + base64.b64encode(data).decode()
+        p = Path(path)
+        if p.exists():
+            data = p.read_bytes()
+            return "data:image/svg+xml;base64," + base64.b64encode(data).decode()
     except Exception:
-        return ""
-
-LOGO_SRC = _svg_b64(str(Path(__file__).parent / "assets" / "logo.svg"))
-
-# ─────────────────────────────────────────────────────────────────────
-#  GLOBAL STYLESHEET — Premium Dark Theme (Humana-inspired)
-# ─────────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-
-/* ═══════════════════════════ ROOT TOKENS ═══════════════════════════ */
-:root{
-  --bg0:#05080F; --bg1:#080D18; --bg2:#0C1220; --bg3:#111827;
-  --bg4:#1A2338; --bg5:#1E293B;
-  --border:#1E2D42; --border2:#2A3F58;
-  --blue:#3B82F6; --blue-lt:#60A5FA; --blue-dim:rgba(59,130,246,.12);
-  --purple:#8B5CF6; --purple-lt:#A78BFA; --purple-dim:rgba(139,92,246,.12);
-  --green:#10B981; --green-lt:#34D399; --green-dim:rgba(16,185,129,.12);
-  --amber:#F59E0B; --amber-lt:#FCD34D; --amber-dim:rgba(245,158,11,.12);
-  --red:#EF4444; --red-lt:#FCA5A5; --red-dim:rgba(239,68,68,.12);
-  --t1:#F1F5F9; --t2:#94A3B8; --t3:#64748B; --t4:#334155;
-  --mono:'JetBrains Mono',monospace;
-  --radius:12px; --radius-sm:8px; --radius-xs:6px;
-}
-
-/* ═══════════════════════════ BASE RESET ════════════════════════════ */
-html,body,[class*="css"]{
-  font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif!important;
-  background:var(--bg0)!important; color:var(--t1)!important;
-}
-#MainMenu,footer,header{visibility:hidden;}
-.block-container{padding-top:1.2rem!important;max-width:1480px;padding-left:1.5rem!important;padding-right:1.5rem!important;}
-
-/* ═══════════════════════════ SIDEBAR ═══════════════════════════════ */
-section[data-testid="stSidebar"]{
-  background:linear-gradient(180deg,var(--bg1) 0%,var(--bg0) 100%)!important;
-  border-right:1px solid var(--border)!important;
-  width:300px!important;
-}
-section[data-testid="stSidebar"] *{color:var(--t2)!important;}
-section[data-testid="stSidebar"] strong{color:var(--t1)!important;}
-
-/* Sidebar inputs */
-section[data-testid="stSidebar"] .stSelectbox>div>div,
-section[data-testid="stSidebar"] .stTextInput>div>div{
-  background:var(--bg3)!important; border:1px solid var(--border)!important;
-  color:var(--t1)!important; border-radius:var(--radius-sm)!important; font-size:.82rem!important;
-}
-section[data-testid="stSidebar"] .stSelectbox>div>div:hover,
-section[data-testid="stSidebar"] .stTextInput>div>div:hover{border-color:var(--blue)!important;}
-section[data-testid="stSidebar"] .stCheckbox span{color:var(--t1)!important;font-size:.83rem!important;}
-section[data-testid="stSidebar"] .stSlider .stMarkdown p{color:var(--t2)!important;font-size:.8rem!important;}
-[role="slider"]{background:var(--blue)!important;}
-
-/* ════════════════ SIDEBAR BRAND ════════════════════════════════════ */
-.sb-brand{
-  background:linear-gradient(135deg,#0A1628 0%,#0D1E38 100%);
-  border:1px solid #1E3358; border-radius:var(--radius);
-  padding:.85rem 1rem .8rem; margin-bottom:.9rem;
-  position:relative; overflow:hidden;
-}
-.sb-brand::before{
-  content:''; position:absolute; top:0;left:0;right:0; height:2px;
-  background:linear-gradient(90deg,var(--blue),var(--purple),var(--green));
-}
-.sb-brand-row{display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem;}
-.sb-logo{width:32px;height:32px;flex-shrink:0;}
-.sb-name{font-size:.98rem;font-weight:800;color:var(--t1);letter-spacing:-.02em;line-height:1.1;}
-.sb-tagline{font-size:.7rem;color:var(--t3);line-height:1.5;margin-bottom:.45rem;}
-.sb-dev{font-size:.72rem;color:var(--blue-lt);font-weight:600;}
-.sb-company{font-size:.68rem;color:var(--t4);margin-top:.05rem;}
-
-/* ════════════════ SIDEBAR SECTION HEADERS ══════════════════════════ */
-.sb-sect{
-  display:flex;align-items:center;gap:.4rem;
-  font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
-  color:var(--blue);margin:1rem 0 .4rem;padding-bottom:.3rem;
-  border-bottom:1px solid var(--border);
-}
-.sb-sect-num{
-  width:17px;height:17px;border-radius:50%;background:var(--blue-dim);
-  border:1px solid rgba(59,130,246,.3);color:var(--blue-lt);
-  display:flex;align-items:center;justify-content:center;
-  font-size:.65rem;font-weight:800;flex-shrink:0;
-}
-
-/* ════════════════ STATUS PILL ═══════════════════════════════════════ */
-.pill{
-  display:inline-flex;align-items:center;gap:.3rem;
-  padding:.22rem .65rem;border-radius:100px;font-size:.73rem;font-weight:600;
-}
-.pill-green{background:var(--green-dim);color:var(--green-lt);border:1px solid rgba(16,185,129,.3);}
-.pill-blue {background:var(--blue-dim); color:var(--blue-lt); border:1px solid rgba(59,130,246,.3);}
-.pill-amber{background:var(--amber-dim);color:var(--amber-lt);border:1px solid rgba(245,158,11,.3);}
-.pill-red  {background:var(--red-dim);  color:var(--red-lt);  border:1px solid rgba(239,68,68,.3);}
-
-/* ════════════════ HERO BANNER ═══════════════════════════════════════ */
-.hero{
-  background:linear-gradient(135deg,#070D1C 0%,#0B1625 55%,#080E1C 100%);
-  border:1px solid #1A3050; border-radius:16px;
-  padding:1.8rem 2.2rem 1.5rem; margin-bottom:1.3rem;
-  position:relative; overflow:hidden;
-}
-.hero::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,var(--blue) 0%,var(--purple) 45%,var(--green) 100%);
-}
-.hero::after{
-  content:'';position:absolute;top:-80px;right:-60px;
-  width:260px;height:260px;
-  background:radial-gradient(circle,rgba(59,130,246,.06) 0%,transparent 70%);
-  pointer-events:none;
-}
-.hero-inner{display:flex;align-items:flex-start;gap:1.2rem;}
-.hero-logo{width:58px;height:58px;flex-shrink:0;margin-top:.1rem;}
-.hero-h1{
-  font-size:2rem;font-weight:900;letter-spacing:-.035em;
-  color:var(--t1);line-height:1.1;margin-bottom:.25rem;
-}
-.hero-h1 em{font-style:normal;color:var(--blue-lt);}
-.hero-sub{font-size:.9rem;color:var(--t2);line-height:1.65;max-width:680px;margin-bottom:.9rem;}
-.hero-badges{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;}
-.hb{
-  display:inline-flex;align-items:center;gap:.28rem;
-  padding:.22rem .6rem;border-radius:var(--radius-xs);
-  font-size:.7rem;font-weight:600;font-family:var(--mono);
-}
-.hb-blue  {background:var(--blue-dim);  color:var(--blue-lt);  border:1px solid rgba(59,130,246,.2);}
-.hb-purple{background:var(--purple-dim);color:var(--purple-lt);border:1px solid rgba(139,92,246,.2);}
-.hb-green {background:var(--green-dim); color:var(--green-lt); border:1px solid rgba(16,185,129,.2);}
-.hb-amber {background:var(--amber-dim); color:var(--amber-lt); border:1px solid rgba(245,158,11,.2);}
-.hb-red   {background:var(--red-dim);   color:var(--red-lt);   border:1px solid rgba(239,68,68,.2);}
-
-/* ════════════════ PIPELINE FLOW ════════════════════════════════════ */
-.pipe-wrap{
-  display:flex;align-items:center;overflow-x:auto;gap:0;
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:.8rem 1.4rem;margin-bottom:1.2rem;
-}
-.pipe-node{display:flex;flex-direction:column;align-items:center;min-width:78px;text-align:center;}
-.pipe-ico{
-  width:40px;height:40px;border-radius:50%;border:2px solid;
-  display:flex;align-items:center;justify-content:center;
-  font-size:1.1rem;margin-bottom:.3rem;
-}
-.pi-blue  {background:var(--blue-dim);  border-color:rgba(59,130,246,.4);}
-.pi-purple{background:var(--purple-dim);border-color:rgba(139,92,246,.4);}
-.pi-green {background:var(--green-dim); border-color:rgba(16,185,129,.4);}
-.pi-amber {background:var(--amber-dim); border-color:rgba(245,158,11,.4);}
-.pi-red   {background:var(--red-dim);   border-color:rgba(239,68,68,.4);}
-.pipe-lbl{font-size:.68rem;font-weight:700;color:var(--t2);}
-.pipe-sub{font-size:.62rem;color:var(--t4);margin-top:.05rem;}
-.pipe-arr{color:var(--t4);padding:0 .25rem;margin-bottom:1rem;font-size:.9rem;flex-shrink:0;}
-
-/* ════════════════ AGENT CARDS ═══════════════════════════════════════ */
-.acard{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:.9rem 1rem;height:100%;display:flex;flex-direction:column;
-  transition:border-color .2s,box-shadow .2s;position:relative;overflow:hidden;
-}
-.acard::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
-.acard:hover{box-shadow:0 0 24px rgba(59,130,246,.12);}
-.ac-blue  ::before,.ac-blue  {border-top-color:var(--blue)!important;}
-.ac-purple::before,.ac-purple{border-top-color:var(--purple)!important;}
-.ac-green ::before,.ac-green {border-top-color:var(--green)!important;}
-.ac-amber ::before,.ac-amber {border-top-color:var(--amber)!important;}
-.acard::before{background:currentColor;}
-.ac-blue  {border-top:2px solid var(--blue);}
-.ac-purple{border-top:2px solid var(--purple);}
-.ac-green {border-top:2px solid var(--green);}
-.ac-amber {border-top:2px solid var(--amber);}
-.ac-icon{font-size:1.4rem;margin-bottom:.35rem;}
-.ac-tag{font-size:.64rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);margin-bottom:.1rem;}
-.ac-name{font-size:.88rem;font-weight:700;color:var(--t1);margin-bottom:.28rem;}
-.ac-desc{font-size:.76rem;color:var(--t2);line-height:1.5;flex-grow:1;}
-.ac-model{
-  margin-top:.55rem;font-family:var(--mono);font-size:.67rem;
-  color:var(--t3);background:var(--bg3);border:1px solid var(--border);
-  padding:.2rem .45rem;border-radius:var(--radius-xs);
-  display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-}
-
-/* ════════════════ METRIC CARDS ══════════════════════════════════════ */
-.mcard{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:.85rem 1rem;text-align:center;
-}
-.mcard-val{font-size:1.75rem;font-weight:800;letter-spacing:-.03em;line-height:1;margin-bottom:.2rem;}
-.mcard-lbl{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--t4);}
-.mcard-sub{font-size:.68rem;color:var(--t3);margin-top:.1rem;}
-
-/* ════════════════ BUG ITEMS ═════════════════════════════════════════ */
-.bug{
-  border-left:3px solid;border-radius:0 var(--radius-sm) var(--radius-sm) 0;
-  padding:.65rem .9rem;margin-bottom:.45rem;background:var(--bg3);
-}
-.bug-critical{border-left-color:var(--red);}
-.bug-major   {border-left-color:var(--amber);}
-.bug-minor   {border-left-color:var(--blue);}
-.bug-suggestion{border-left-color:var(--purple);}
-.bug-hdr{display:flex;align-items:center;gap:.38rem;margin-bottom:.28rem;flex-wrap:wrap;}
-.bug-desc{font-size:.81rem;color:var(--t2);line-height:1.5;}
-.bug-fix{font-size:.76rem;color:var(--green-lt);font-family:var(--mono);margin-top:.22rem;}
-
-/* ════════════════ BADGE ═════════════════════════════════════════════ */
-.bdg{
-  display:inline-block;padding:.1rem .4rem;border-radius:4px;
-  font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
-}
-.bdg-critical  {background:var(--red-dim);   color:var(--red-lt);   border:1px solid rgba(239,68,68,.3);}
-.bdg-major     {background:var(--amber-dim); color:var(--amber-lt); border:1px solid rgba(245,158,11,.3);}
-.bdg-minor     {background:var(--blue-dim);  color:var(--blue-lt);  border:1px solid rgba(59,130,246,.3);}
-.bdg-suggestion{background:var(--purple-dim);color:var(--purple-lt);border:1px solid rgba(139,92,246,.3);}
-.bdg-approved  {background:var(--green-dim); color:var(--green-lt); border:1px solid rgba(16,185,129,.3);}
-.bdg-changes   {background:var(--amber-dim); color:var(--amber-lt); border:1px solid rgba(245,158,11,.3);}
-.bdg-security  {background:var(--red-dim);   color:var(--red-lt);   border:1px solid rgba(239,68,68,.3);}
-
-/* ════════════════ CHAT BUBBLES ══════════════════════════════════════ */
-.cb{border-radius:var(--radius-sm);padding:.65rem .9rem;margin-bottom:.5rem;border:1px solid;}
-.cb-gen {background:rgba(59,130,246,.05); border-color:rgba(59,130,246,.18);}
-.cb-rev {background:rgba(139,92,246,.05); border-color:rgba(139,92,246,.18);}
-.cb-val {background:rgba(16,185,129,.05); border-color:rgba(16,185,129,.18);}
-.cb-sys {background:rgba(245,158,11,.05); border-color:rgba(245,158,11,.18);}
-.cb-hdr{display:flex;align-items:center;gap:.4rem;margin-bottom:.3rem;flex-wrap:wrap;}
-.cb-who{font-size:.76rem;font-weight:700;}
-.cb-mdl{font-size:.65rem;color:var(--t4);font-family:var(--mono);background:var(--bg3);padding:.08rem .3rem;border-radius:4px;}
-.cb-ts {font-size:.64rem;color:var(--t4);margin-left:auto;}
-.cb-body{font-size:.82rem;color:var(--t2);line-height:1.55;white-space:pre-wrap;}
-
-/* ════════════════ SCORE BAR ═════════════════════════════════════════ */
-.sbr{display:flex;align-items:center;gap:.5rem;}
-.sbr-track{flex:1;height:5px;border-radius:3px;background:var(--border);overflow:hidden;}
-.sbr-fill{height:100%;border-radius:3px;transition:width .4s ease;}
-.sbr-val{font-size:.8rem;font-weight:700;min-width:30px;text-align:right;}
-
-/* ════════════════ MAIN INPUT STYLING ═══════════════════════════════ */
-.stTextArea textarea,.stTextInput input{
-  background:var(--bg2)!important;border:1px solid var(--border)!important;
-  color:var(--t1)!important;border-radius:var(--radius-sm)!important;font-size:.87rem!important;
-  font-family:'Inter',sans-serif!important;
-}
-.stTextArea textarea:focus,.stTextInput input:focus{
-  border-color:var(--blue)!important;box-shadow:0 0 0 3px rgba(59,130,246,.15)!important;
-}
-.stTextArea label,.stTextInput label,.stSelectbox label{color:var(--t2)!important;font-size:.8rem!important;}
-.stSelectbox>div>div{
-  background:var(--bg2)!important;border:1px solid var(--border)!important;
-  color:var(--t1)!important;border-radius:var(--radius-sm)!important;
-}
-.stSelectbox>div>div:hover{border-color:var(--blue)!important;}
-
-/* ════════════════ BUTTONS ═══════════════════════════════════════════ */
-.stButton>button[kind="primary"]{
-  background:linear-gradient(135deg,#1D4ED8,#3B82F6)!important;
-  border:none!important;color:#fff!important;font-weight:700!important;
-  font-size:.9rem!important;border-radius:var(--radius-sm)!important;
-  padding:.6rem 1.4rem!important;
-  box-shadow:0 4px 15px rgba(59,130,246,.3)!important;transition:all .2s!important;
-}
-.stButton>button[kind="primary"]:hover{
-  background:linear-gradient(135deg,#1E40AF,#2563EB)!important;
-  transform:translateY(-1px)!important;box-shadow:0 6px 20px rgba(59,130,246,.4)!important;
-}
-.stButton>button[kind="secondary"]{
-  background:var(--bg3)!important;border:1px solid var(--border)!important;
-  color:var(--t2)!important;border-radius:var(--radius-sm)!important;font-weight:600!important;font-size:.85rem!important;
-}
-.stButton>button[kind="secondary"]:hover{border-color:var(--blue)!important;color:var(--blue-lt)!important;}
-.stDownloadButton>button{
-  background:var(--bg3)!important;border:1px solid var(--border)!important;
-  color:var(--t2)!important;border-radius:var(--radius-sm)!important;
-  font-size:.8rem!important;font-weight:600!important;
-}
-.stDownloadButton>button:hover{border-color:var(--green)!important;color:var(--green-lt)!important;}
-
-/* ════════════════ TABS ══════════════════════════════════════════════ */
-.stTabs [data-baseweb="tab-list"]{
-  background:var(--bg2)!important;border:1px solid var(--border)!important;
-  border-bottom:none!important;border-radius:var(--radius) var(--radius) 0 0!important;
-  padding:.3rem .4rem 0!important;gap:.15rem!important;
-}
-.stTabs [data-baseweb="tab"]{
-  background:transparent!important;color:var(--t3)!important;
-  border-radius:var(--radius-sm) var(--radius-sm) 0 0!important;
-  font-size:.8rem!important;font-weight:600!important;padding:.5rem .9rem!important;border:none!important;
-}
-.stTabs [aria-selected="true"]{
-  background:var(--blue-dim)!important;color:var(--blue-lt)!important;
-  border-bottom:2px solid var(--blue)!important;
-}
-.stTabs [data-baseweb="tab-panel"]{
-  background:var(--bg2)!important;border:1px solid var(--border)!important;
-  border-radius:0 0 var(--radius) var(--radius)!important;padding:1.3rem 1.5rem!important;
-}
-
-/* ════════════════ EXPANDER ══════════════════════════════════════════ */
-.stExpander{background:var(--bg2)!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm)!important;}
-.stExpander summary{color:var(--t2)!important;font-size:.83rem!important;font-weight:600!important;}
-
-/* ════════════════ CODE BLOCKS ═══════════════════════════════════════ */
-.stCodeBlock pre{background:#020508!important;border:1px solid var(--border)!important;font-size:.78rem!important;border-radius:var(--radius-sm)!important;}
-
-/* ════════════════ ALERTS ════════════════════════════════════════════ */
-[data-testid="stAlert"]{background:var(--bg2)!important;border-radius:var(--radius-sm)!important;}
-
-/* ════════════════ RADIO ═════════════════════════════════════════════ */
-.stRadio label span{color:var(--t2)!important;font-size:.84rem!important;}
-
-/* ════════════════ PROGRESS ══════════════════════════════════════════ */
-.stProgress>div{background:var(--border)!important;border-radius:100px!important;}
-.stProgress>div>div{background:linear-gradient(90deg,var(--blue),var(--purple))!important;border-radius:100px!important;}
-
-/* ════════════════ HR ════════════════════════════════════════════════ */
-hr{border-color:var(--border)!important;margin:1.2rem 0!important;}
-
-/* ════════════════ FILE UPLOADER ═════════════════════════════════════ */
-[data-testid="stFileUploader"]{
-  background:var(--bg2)!important;border:1.5px dashed var(--border)!important;border-radius:var(--radius)!important;
-}
-[data-testid="stFileUploader"]:hover{border-color:var(--blue)!important;}
-
-/* ════════════════ EMPTY STATE ═══════════════════════════════════════ */
-.empty-state{text-align:center;padding:3.5rem 1rem;color:var(--t4);}
-.empty-state-icon{font-size:3rem;margin-bottom:.7rem;}
-.empty-state-title{font-size:1.05rem;font-weight:700;color:var(--t3);margin-bottom:.35rem;}
-.empty-state-sub{font-size:.85rem;color:var(--t4);max-width:480px;margin:0 auto;line-height:1.7;}
-
-/* ════════════════ REAL-WORLD SCENARIO CARD ══════════════════════════ */
-.scenario-card{
-  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:.8rem 1rem;cursor:pointer;transition:border-color .2s,background .2s;
-  margin-bottom:.5rem;
-}
-.scenario-card:hover{border-color:var(--blue);background:var(--bg3);}
-.sc-tag{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--blue-lt);margin-bottom:.2rem;}
-.sc-title{font-size:.84rem;font-weight:700;color:var(--t1);margin-bottom:.2rem;}
-.sc-desc{font-size:.75rem;color:var(--t3);line-height:1.45;}
-
-/* ════════════════ DIFF STAT BAR ══════════════════════════════════════ */
-.diff-stat{display:flex;gap:.6rem;align-items:center;margin-bottom:.7rem;flex-wrap:wrap;}
-.diff-added  {font-size:.8rem;font-weight:700;color:var(--green-lt);}
-.diff-removed{font-size:.8rem;font-weight:700;color:var(--red-lt);}
-.diff-files  {font-size:.8rem;color:var(--t3);}
-
-/* ════════════════ MISC ══════════════════════════════════════════════ */
-.stMarkdown h3{color:var(--t1)!important;font-weight:700!important;font-size:1rem!important;margin-bottom:.6rem!important;}
-.stMarkdown p{color:var(--t2)!important;font-size:.88rem!important;line-height:1.6!important;}
-small,.stCaptionContainer{color:var(--t4)!important;font-size:.74rem!important;}
-
-/* ════════════════ QUICK-START BOX ═══════════════════════════════════ */
-.qs-box{
-  background:linear-gradient(135deg,rgba(16,185,129,.08) 0%,rgba(59,130,246,.08) 100%);
-  border:1.5px solid rgba(16,185,129,.35);border-radius:var(--radius);
-  padding:.85rem 1rem;margin-bottom:.7rem;
-}
-.qs-title{font-size:.78rem;font-weight:800;color:var(--green-lt);
-  text-transform:uppercase;letter-spacing:.07em;margin-bottom:.5rem;}
-.qs-step{display:flex;align-items:flex-start;gap:.45rem;
-  font-size:.75rem;color:var(--t2);margin-bottom:.32rem;line-height:1.4;}
-.qs-num{width:16px;height:16px;border-radius:50%;background:var(--green-dim);
-  border:1px solid rgba(16,185,129,.4);color:var(--green-lt);
-  display:flex;align-items:center;justify-content:center;
-  font-size:.62rem;font-weight:800;flex-shrink:0;margin-top:.05rem;}
-
-/* ════════════════ FIX BANNER ════════════════════════════════════════ */
-.fix-banner{
-  background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(59,130,246,.08));
-  border:1.5px solid rgba(245,158,11,.4);border-radius:var(--radius);
-  padding:1rem 1.2rem;
-}
-.fix-title{font-size:.9rem;font-weight:800;color:var(--amber-lt);margin-bottom:.4rem;}
-.fix-body {font-size:.8rem;color:var(--t2);line-height:1.6;}
-.fix-code {font-family:var(--mono);font-size:.75rem;background:var(--bg3);
-  padding:.2rem .5rem;border-radius:4px;color:var(--green-lt);}
-
-/* ════════════════ OLLAMA STATUS BOX ════════════════════════════════ */
-.ol-status{
-  border-radius:var(--radius-sm);padding:.55rem .8rem;
-  font-size:.74rem;font-weight:600;margin-bottom:.6rem;
-  display:flex;align-items:center;gap:.4rem;
-}
-.ol-ok {background:var(--green-dim);border:1px solid rgba(16,185,129,.3);color:var(--green-lt);}
-.ol-err{background:var(--amber-dim);border:1px solid rgba(245,158,11,.3); color:var(--amber-lt);}
-</style>
-""", unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────────────────────────────
-def _score_color(s: int) -> str:
-    if s >= 9:  return "#10B981"
-    if s >= 7:  return "#3B82F6"
-    if s >= 5:  return "#F59E0B"
-    return "#EF4444"
-
-def _sev_class(sev: str) -> str:
-    return {"CRITICAL":"critical","MAJOR":"major","MINOR":"minor","SUGGESTION":"suggestion"}.get(sev.upper(),"minor")
-
-def _status_icon(st_: str) -> str:
-    return {"APPROVED":"✅","CHANGES_REQUESTED":"🔄","REJECTED":"❌"}.get(st_,"⏳")
-
-def _score_bar(score: int) -> str:
-    c = _score_color(score)
-    return f"""
-    <div class="sbr">
-      <div class="sbr-track"><div class="sbr-fill" style="width:{score*10}%;background:{c};"></div></div>
-      <span class="sbr-val" style="color:{c};">{score}/10</span>
-    </div>"""
-
-def _bubble_class(role: str) -> tuple:
-    return {
-        "Generator":   ("cb-gen","👨‍💻","#60A5FA"),
-        "Reviewer":    ("cb-rev","🧐","#A78BFA"),
-        "Validator":   ("cb-val","🛡️","#34D399"),
-        "User/System": ("cb-sys","📋","#FCD34D"),
-    }.get(role, ("cb-sys","🤖","#94A3B8"))
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  OLLAMA STATUS (cached 30s)
-# ─────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=30, show_spinner=False)
-def _ollama_status():
-    try:
-        p = OllamaProvider("_probe")
-        if p.check_health():
-            return True, p.get_available_models()
-        return False, []
-    except Exception:
-        return False, []
-
-ollama_ok, ollama_models = _ollama_status()
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  REAL-WORLD SCENARIO PRESETS
-# ─────────────────────────────────────────────────────────────────────
-SCENARIOS = {
-    # ── Core algorithms ──────────────────────────────────────────────
-    "🔤 Palindrome Checker (NLP pre-processing)": {
-        "domain": "String Processing",
-        "prompt": (
-            "Write a Python function `is_palindrome(s: str) -> bool` that checks if a string is a palindrome. "
-            "Must ignore punctuation, whitespace, and casing. Handle `None`, empty strings, and Unicode characters."
-        ),
-        "tests": "assert is_palindrome('A man, a plan, a canal: Panama') == True\nassert is_palindrome('race a car') == False\nassert is_palindrome('') == True\nassert is_palindrome(None) == False",
-        "lang": "python",
-    },
-    "🔢 Factorial Function (Math APIs)": {
-        "domain": "Mathematics",
-        "prompt": (
-            "Write a Python function `factorial(n: int) -> int` that computes n! iteratively. "
-            "Raise `ValueError` for negative inputs and `TypeError` for non-integer types. Handle n=0 and n=1."
-        ),
-        "tests": "assert factorial(0)==1\nassert factorial(5)==120\nassert factorial(1)==1\ntry:\n    factorial(-1)\nexcept ValueError: pass",
-        "lang": "python",
-    },
-    "📈 Fibonacci (Finance / Signal Processing)": {
-        "domain": "Dynamic Programming",
-        "prompt": (
-            "Write a Python function `fibonacci(n: int) -> int` returning the nth Fibonacci number "
-            "using O(n) time and O(1) space. Raise ValueError for negative n."
-        ),
-        "tests": "assert fibonacci(0)==0\nassert fibonacci(1)==1\nassert fibonacci(10)==55",
-        "lang": "python",
-    },
-    "🔍 Binary Search (Search Engines)": {
-        "domain": "Search Algorithms",
-        "prompt": (
-            "Write a Python function `binary_search(arr: list, target: int) -> int` using iterative binary search "
-            "on a sorted list. Return the index if found, -1 otherwise. Handle empty arrays, `None`, and duplicates."
-        ),
-        "tests": "assert binary_search([1,3,5,7,9],5)==2\nassert binary_search([],3)==-1\nassert binary_search([1,2,3],99)==-1",
-        "lang": "python",
-    },
-    "🔀 Merge Sort (Data Pipelines)": {
-        "domain": "Sorting Algorithms",
-        "prompt": (
-            "Write a Python function `merge_sort(arr: list) -> list` implementing a stable merge sort. "
-            "Handle empty arrays, single-element lists, and duplicate values. Return a new sorted list."
-        ),
-        "tests": "assert merge_sort([3,1,2])==[1,2,3]\nassert merge_sort([])==[]\nassert merge_sort([1])==[1]",
-        "lang": "python",
-    },
-    "⚡ LRU Cache (API / Database Layer)": {
-        "domain": "System Design",
-        "prompt": (
-            "Implement an `LRUCache` class in Python with `get(key)` returning -1 on miss and "
-            "`put(key, value)` in O(1) time using `collections.OrderedDict`. Evict the LRU item when at capacity. "
-            "Include full type annotations and docstring."
-        ),
-        "tests": "c=LRUCache(2)\nc.put(1,1)\nc.put(2,2)\nassert c.get(1)==1\nc.put(3,3)\nassert c.get(2)==-1",
-        "lang": "python",
-    },
-    "🔐 SQL Injection Validator (Security)": {
-        "domain": "Web Security",
-        "prompt": (
-            "Write a Python function `is_safe_query(user_input: str) -> bool` that detects common SQL injection "
-            "patterns (UNION, DROP, --, ;, xp_, etc.) using regex. Return False if dangerous. Handle None."
-        ),
-        "tests": "assert is_safe_query(\"Robert'); DROP TABLE\") == False\nassert is_safe_query('John Smith') == True\nassert is_safe_query(None) == False",
-        "lang": "python",
-    },
-    "📊 Moving Average (Time-Series / Finance)": {
-        "domain": "Data Science",
-        "prompt": (
-            "Write a Python function `moving_average(data: list, window: int) -> list` that computes a "
-            "simple moving average. Handle edge cases: empty list, window > len(data), window <= 0, and None. "
-            "Return a list of floats."
-        ),
-        "tests": "assert moving_average([1,2,3,4,5],3)==[2.0,3.0,4.0]\nassert moving_average([],3)==[]\nassert moving_average([1,2],5)==[]",
-        "lang": "python",
-    },
-    "📁 File Path Sanitizer (Cloud Storage)": {
-        "domain": "Cloud / Storage",
-        "prompt": (
-            "Write a Python function `sanitize_path(path: str) -> str` that prevents directory traversal attacks "
-            "(e.g. `../`), removes null bytes, strips dangerous characters, and normalises the path. Raise ValueError if path is None or unsafe."
-        ),
-        "tests": "assert '/' not in sanitize_path('normal_file.txt').split('/')[-1]\ntry:\n    sanitize_path('../etc/passwd')\nexcept ValueError: pass",
-        "lang": "python",
-    },
-    "🌐 URL Validator (Web Crawler / API)": {
-        "domain": "Networking",
-        "prompt": (
-            "Write a Python function `is_valid_url(url: str) -> bool` using regex or urllib.parse to validate "
-            "URLs. Must accept http/https schemes, reject empty strings, None, and malformed URLs with proper type checking."
-        ),
-        "tests": "assert is_valid_url('https://example.com') == True\nassert is_valid_url('not-a-url') == False\nassert is_valid_url(None) == False",
-        "lang": "python",
-    },
-    "✏️ Custom Task Prompt": {
-        "domain": "Custom",
-        "prompt": "",
-        "tests": "",
-        "lang": "python",
-    },
-}
-
-# ─────────────────────────────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────────────────────────────
-with st.sidebar:
-
-    # ── Brand ──────────────────────────────────────────────────────
-    logo_html = f'<img src="{LOGO_SRC}" class="sb-logo"/>' if LOGO_SRC else "🛡️"
-    st.markdown(f"""
-    <div class="sb-brand">
-        <div class="sb-brand-row">
-            {logo_html}
-            <div>
-                <div class="sb-name">OpenReviewAI</div>
-            </div>
-        </div>
-        <div class="sb-tagline">Multi-LLM Code Review &amp; Self-Correction System<br/>
-        Druidot Consulting Pvt. Ltd.</div>
-        <div class="sb-dev">👨‍💻 Aman Varma</div>
-        <div class="sb-company">Python Development Internship · v1.0.0</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Quick Start Guide ──────────────────────────────────────────
-    st.markdown("""
-    <div class="qs-box">
-      <div class="qs-title">⚡ Quick Start Guide</div>
-      <div class="qs-step"><div class="qs-num">1</div><span>Select <strong>⚡ Smart Simulator</strong> below — works instantly, no GPU needed</span></div>
-      <div class="qs-step"><div class="qs-num">2</div><span>Pick a real-world scenario from the main panel</span></div>
-      <div class="qs-step"><div class="qs-num">3</div><span>Click <strong>🚀 Start Multi-LLM Review Workflow</strong></span></div>
-      <div class="qs-step"><div class="qs-num">4</div><span>View results in the tabs: Chat · Diff · Code · Audit</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Engine Status ──────────────────────────────────────────────
-    if ollama_ok and ollama_models:
-        st.markdown(
-            f'<div class="ol-status ol-ok">🟢 Ollama Online — {len(ollama_models)} model(s) ready</div>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            '<div class="ol-status ol-err">⚠️ Ollama offline / no models — use Smart Simulator</div>',
-            unsafe_allow_html=True
-        )
-
-    # ── 1. Provider ────────────────────────────────────────────────
-    st.markdown("""<div class="sb-sect"><span class="sb-sect-num">1</span>LLM Engine Provider</div>""", unsafe_allow_html=True)
-
-    # Session-state driven provider so "Switch to Simulator" button works
-    if "provider_choice" not in st.session_state:
-        st.session_state.provider_choice = "mock"   # ← ALWAYS default to mock
-
-    provider_choice = st.selectbox(
-        "provider",
-        ["mock", "ollama", "openai_compat", "huggingface"],
-        format_func=lambda x: {
-            "mock":          "⚡ Smart Simulator — Instant, No GPU",
-            "ollama":        "🦙 Ollama — Local Open-Source Models",
-            "openai_compat": "🌐 Cloud API — Groq / DeepSeek / vLLM",
-            "huggingface":   "🤗 HuggingFace Inference API",
-        }.get(x, x),
-        index=["mock","ollama","openai_compat","huggingface"].index(
-            st.session_state.provider_choice
-        ),
-        key="provider_select",
-        label_visibility="collapsed",
-        help="⚡ Smart Simulator works instantly — no models to download!"
-    )
-    st.session_state.provider_choice = provider_choice
-
-    if provider_choice == "mock":
-        st.success("⚡ **Smart Simulator active** — generates realistic bugs, reviews & fixes. No download needed!", icon="✅")
-    elif provider_choice == "ollama" and not ollama_ok:
-        st.warning("⚠️ Ollama not detected. Start Ollama Desktop or run `ollama serve`, then refresh.", icon="🦙")
-    elif provider_choice == "ollama" and ollama_ok and not ollama_models:
-        st.warning("⚠️ Ollama running but no models downloaded. Use the Pull panel below.", icon="📥")
-
-    # ── 2. Models ──────────────────────────────────────────────────
-    st.markdown("""<div class="sb-sect"><span class="sb-sect-num">2</span>Open-Source Models</div>""", unsafe_allow_html=True)
-    st.caption("Gemma · Mistral · Bonsai · Qwen · DeepSeek · CodeLlama")
-
-    # If Ollama is online, show actual downloaded models at the top
-    if ollama_ok and ollama_models:
-        top_gen  = ollama_models + ["qwen2.5:0.5b","qwen2.5-coder:1.5b","deepseek-coder:1.3b","gemma2:2b","mistral:latest"]
-        top_rev  = ollama_models + ["mistral:latest","gemma2:2b","deepseek-coder:1.3b"]
-        top_val  = ollama_models + ["deepseek-coder:1.3b","gemma2:2b","mistral:latest"]
-    else:
-        top_gen  = ["qwen2.5:0.5b","qwen2.5-coder:1.5b","deepseek-coder:1.3b","gemma2:2b","mistral:latest"]
-        top_rev  = ["mistral:latest","gemma2:2b","deepseek-coder:1.3b","qwen2.5-coder:1.5b"]
-        top_val  = ["deepseek-coder:1.3b","bonsai:latest","gemma2:2b","mistral:latest"]
-
-    # deduplicate
-    all_m = WorkflowConfig.get_supported_model_list()
-    def _dedup(lst): seen=set(); return [x for x in lst+all_m if not (x in seen or seen.add(x))]
-
-    gen_model = st.selectbox("LLM 1: Code Generator & Fixer", _dedup(top_gen), index=0,
-        help="Writes & iteratively fixes code")
-    rev_model = st.selectbox("LLM 2: Code Reviewer",          _dedup(top_rev), index=0,
-        help="Static analysis & bug detection")
-
-    enable_val = st.checkbox("Enable LLM 3: Security Validator", value=True)
-    val_model  = "deepseek-coder:1.3b"
-    if enable_val:
-        val_model = st.selectbox("LLM 3: Validator", _dedup(top_val), index=0,
-            help="Security audit & final approval")
-
-    # ── 3. Guardrails ──────────────────────────────────────────────
-    st.markdown("""<div class="sb-sect"><span class="sb-sect-num">3</span>Workflow Guardrails</div>""", unsafe_allow_html=True)
-    max_retries    = st.slider("Max Review Cycles", 1, 5, 3,
-        help="Finite bound — prevents infinite loops. Stops after K retries.")
-    enable_sandbox = st.checkbox("Sandbox Code Execution", value=True,
-        help="Run code in safe subprocess with timeout guard")
-    temperature    = st.slider("Temperature", 0.0, 0.8, 0.2, 0.05,
-        help="Higher = more creative (may introduce bugs)")
-
-    # ── 4. API Credentials (conditional) ──────────────────────────
-    if provider_choice == "openai_compat":
-        st.markdown("""<div class="sb-sect"><span class="sb-sect-num">4</span>Cloud API Settings</div>""", unsafe_allow_html=True)
-        api_base = st.text_input("Base URL", value=os.getenv("OPENAI_COMPATIBLE_BASE_URL","https://api.groq.com/openai/v1"))
-        api_key  = st.text_input("API Key",  type="password", value=os.getenv("OPENAI_COMPATIBLE_API_KEY",""))
-        if api_base: os.environ["OPENAI_COMPATIBLE_BASE_URL"] = api_base
-        if api_key:  os.environ["OPENAI_COMPATIBLE_API_KEY"]  = api_key
-    elif provider_choice == "huggingface":
-        st.markdown("""<div class="sb-sect"><span class="sb-sect-num">4</span>HuggingFace Token</div>""", unsafe_allow_html=True)
-        hf_tok = st.text_input("HF Token", type="password", value=os.getenv("HUGGINGFACEHUB_API_TOKEN",""))
-        if hf_tok: os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_tok
-
-    # ── 5. Ollama Model Pull ───────────────────────────────────────
-    st.markdown("""<div class="sb-sect"><span class="sb-sect-num">5</span>Pull Ollama Model</div>""", unsafe_allow_html=True)
-    if provider_choice == "ollama":
-        pull_name = st.text_input("Model to pull", placeholder="e.g. qwen2.5:0.5b", label_visibility="collapsed")
-        if st.button("⬇️ Pull Model", use_container_width=True):
-            if pull_name.strip():
-                import subprocess
-                ollama_exe = r"C:\Users\AMAN VARMA\AppData\Local\Programs\Ollama\ollama.exe"
-                if not Path(ollama_exe).exists():
-                    ollama_exe = "ollama"
-                with st.spinner(f"Pulling {pull_name}… (may take a few minutes)"):
-                    try:
-                        r = subprocess.run([ollama_exe,"pull",pull_name.strip()],
-                            capture_output=True, text=True, timeout=600)
-                        if r.returncode == 0:
-                            st.success(f"✅ `{pull_name}` pulled!")
-                            st.cache_data.clear()
-                        else:
-                            st.error(f"Pull failed: {r.stderr[:300]}")
-                    except FileNotFoundError:
-                        st.error("Ollama CLI not found. Install from https://ollama.com")
-                    except Exception as e:
-                        st.error(str(e))
-            else:
-                st.warning("Enter a model name first.")
-
-        # One-click recommended models
-        st.caption("Recommended tiny models (fast, CPU-friendly):")
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            if st.button("qwen2.5:0.5b", use_container_width=True, help="Smallest Qwen coder ~400MB"):
-                st.session_state._pull_name = "qwen2.5:0.5b"
-        with rc2:
-            if st.button("gemma2:2b", use_container_width=True, help="Google Gemma 2B ~1.6GB"):
-                st.session_state._pull_name = "gemma2:2b"
-    else:
-        st.markdown("""
-        <div style="font-size:.75rem;color:#475569;padding:.4rem 0;line-height:1.7;">
-        Switch to <strong style="color:#60A5FA;">🦙 Ollama</strong> provider above to pull models.<br/>
-        <span style="color:#10B981;">⚡ Smart Simulator</span> needs no downloads.
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Footer ─────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("""
-    <div style="font-size:.7rem;color:#475569;text-align:center;line-height:2;">
-        🧪 19/19 Pytest Tests Passing<br/>
-        🌐 100% Open-Source · No Cloud Lock-in<br/>
-        🛡️ Subprocess Sandbox · Finite Retry Bound<br/>
-        📄 Full Audit Trail · JSON &amp; Markdown Export
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  HERO BANNER
-# ─────────────────────────────────────────────────────────────────────
-engine_lbl = (f"🦙 Ollama · {len(ollama_models)} model(s)"
-              if provider_choice=="ollama" and ollama_ok else
-              "⚡ Smart Simulator")
-
-logo_hero = f'<img src="{LOGO_SRC}" class="hero-logo"/>' if LOGO_SRC else '<span style="font-size:3rem;">🛡️</span>'
-
-st.markdown(f"""
-<div class="hero">
-  <div class="hero-inner">
-    {logo_hero}
-    <div>
-      <div class="hero-h1">Open<em>Review</em>AI</div>
-      <div class="hero-sub">
-        A professional multi-agent AI system where open-source LLMs collaborate to <strong>generate</strong>,
-        <strong>inspect</strong>, <strong>debug</strong>, and <strong>iteratively self-correct</strong> code —
-        with full audit trails, AST security scanning, subprocess sandbox execution, and exportable reports.
-        Ready for real-world, global-level software engineering workflows.
-      </div>
-      <div class="hero-badges">
-        <span class="hb hb-blue">👨‍💻 Generator — {gen_model}</span>
-        <span class="hb hb-purple">🧐 Reviewer — {rev_model}</span>
-        <span class="hb hb-green">🛡️ Validator{'' if enable_val else ' — off'}</span>
-        <span class="hb hb-amber">⚡ {engine_lbl}</span>
-        <span class="hb hb-green">✅ Max {max_retries} Retry Cycles</span>
-        <span class="hb hb-blue">🔒 AST Security Scan</span>
-        <span class="hb hb-purple">📄 Full Audit Trail</span>
-      </div>
-    </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  PIPELINE FLOW DIAGRAM
-# ─────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="pipe-wrap">
-  <div class="pipe-node"><div class="pipe-ico pi-amber">📝</div><div class="pipe-lbl">Prompt</div><div class="pipe-sub">Task Spec</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-blue">👨‍💻</div><div class="pipe-lbl">LLM 1</div><div class="pipe-sub">Generator</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-amber">⚡</div><div class="pipe-lbl">Sandbox</div><div class="pipe-sub">Subprocess</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-purple">🧐</div><div class="pipe-lbl">LLM 2</div><div class="pipe-sub">Reviewer</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-green">🛡️</div><div class="pipe-lbl">LLM 3</div><div class="pipe-sub">Validator</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-red">🔁</div><div class="pipe-lbl">Fix Loop</div><div class="pipe-sub">≤ K rounds</div></div>
-  <div class="pipe-arr">→</div>
-  <div class="pipe-node"><div class="pipe-ico pi-green">🏆</div><div class="pipe-lbl">Approved</div><div class="pipe-sub">Final Code</div></div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  AGENT ROLE CARDS
-# ─────────────────────────────────────────────────────────────────────
-ca, cb_, cc, cd = st.columns(4)
-_cards = [
-    (ca, "ac-blue",   "👨‍💻", "LLM 1 · Generator & Fixer", "Code Author Agent",
-     "Writes the initial implementation from the task spec. Applies targeted iterative fixes based on reviewer feedback.", gen_model),
-    (cb_, "ac-purple", "🧐", "LLM 2 · Inspector",         "Code Reviewer Agent",
-     "Performs static and semantic analysis. Flags logic errors, edge cases, runtime crashes, and security anti-patterns with severity levels.", rev_model),
-    (cc, "ac-green",  "🛡️", "LLM 3 · Arbiter",           "Security & QA Validator",
-     "Security auditor checking for CWE-95 (eval/exec injection), unsafe imports, and system calls. Issues final approval or escalation.", val_model if enable_val else "Disabled"),
-    (cd, "ac-amber",  "⚡", "Automated Sandbox",          "Subprocess Test Runner",
-     "Executes generated code in an isolated subprocess with timeout guard. Captures stdout/stderr and assertion failures.", "Python Subprocess · AST"),
-]
-for col, cls, icon, tag, name, desc, mdl in _cards:
-    with col:
-        st.markdown(f"""
-        <div class="acard {cls}">
-          <div class="ac-icon">{icon}</div>
-          <div class="ac-tag">{tag}</div>
-          <div class="ac-name">{name}</div>
-          <div class="ac-desc">{desc}</div>
-          <code class="ac-model">{mdl}</code>
-        </div>
-        """, unsafe_allow_html=True)
-
-st.write("")
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  WORKFLOW MODE
-# ─────────────────────────────────────────────────────────────────────
-wf_mode = st.radio(
-    "**Workflow Mode**",
-    ["💡 Generate Code from Prompt", "📂 Review & Auto-Fix Existing Code"],
-    horizontal=True,
-)
-st.write("")
-
-existing_code = None
-task_prompt   = ""
-custom_tests  = ""
-target_lang   = "python"
-
-# ─────────────────────────────────────────────────────────────────────
-#  MODE A: GENERATE FROM PROMPT
-# ─────────────────────────────────────────────────────────────────────
-if "Generate" in wf_mode:
-    col_l, col_r = st.columns([3,1])
-    with col_l:
-        scenario_name = st.selectbox(
-            "Real-World Scenario",
-            list(SCENARIOS.keys()),
-            index=0,
-            help="Pre-built tasks from real engineering domains (security, data science, APIs, algorithms)",
-        )
-    with col_r:
-        target_lang = st.selectbox("Language", ["python","javascript","go","cpp","typescript"], index=0)
-
-    sc = SCENARIOS[scenario_name]
-    if sc["domain"] != "Custom":
-        st.markdown(
-            f'<span class="bdg bdg-minor" style="margin-bottom:.5rem;display:inline-block;">🏷 {sc["domain"]}</span>',
-            unsafe_allow_html=True
-        )
-
-    task_prompt = st.text_area(
-        "Coding Task Prompt",
-        value=sc["prompt"],
-        height=105,
-        help="Be specific. Include type constraints, edge cases, and performance requirements for best results.",
-        placeholder="Describe what function or module you want the multi-LLM team to write and review…",
-    )
-
-    with st.expander("🧪 Unit Tests / Assertions (Optional — runs in sandbox)", expanded=bool(sc["tests"])):
-        st.caption("These assertions are appended and executed in the sandbox after every generation cycle.")
-        custom_tests = st.text_area(
-            "Unit tests",
-            value=sc["tests"],
-            height=90,
-            label_visibility="collapsed",
-            placeholder="assert my_function(input) == expected_output",
-        )
-
-# ─────────────────────────────────────────────────────────────────────
-#  MODE B: REVIEW EXISTING CODE
-# ─────────────────────────────────────────────────────────────────────
-else:
-    st.info(
-        "📂 Upload or paste any script. LLM 2 & LLM 3 will audit it for **bugs, security flaws, and edge cases**. "
-        "LLM 1 will then apply fixes automatically.",
-        icon="ℹ️"
-    )
-    uc1, uc2 = st.columns([1,2])
-    with uc1:
-        uploaded = st.file_uploader("Upload .py / .js / .ts file", type=["py","js","ts","go","cpp","c"])
-    with uc2:
-        DEFAULT_BUGGY = '''# ⚠️  Code with Multiple Real-World Security & Edge-Case Bugs
-import os
-
-def process_user_query(raw_expr):
-    """Process user expression."""
-    # BUG 1: eval() — Remote Code Execution vulnerability (CWE-95)
-    return eval(raw_expr)
-
-def read_file(filename):
-    """Read file content."""
-    # BUG 2: Path traversal — No sanitization of filename
-    return open("/data/" + filename).read()
-
-def divide(a, b):
-    """Divide a by b."""
-    # BUG 3: ZeroDivisionError — missing guard
-    return a / b
-
-def get_element(arr, idx):
-    """Get element at index."""
-    # BUG 4: IndexError — no bounds check
-    return arr[idx]
-
-if __name__ == "__main__":
-    print(process_user_query("[1, 2, 3]"))
-    print(divide(10, 0))
-'''
-        pasted = st.text_area(
-            "Or paste code here",
-            value=uploaded.getvalue().decode("utf-8") if uploaded else DEFAULT_BUGGY,
-            height=200,
-            label_visibility="collapsed",
-        )
-    existing_code = pasted
-    task_prompt   = (
-        "Perform a comprehensive security and quality review of this code. "
-        "Fix ALL security vulnerabilities (eval/exec injection, path traversal, CWE-95), "
-        "handle all edge cases (division by zero, index out of bounds, None inputs), "
-        "add type annotations, docstrings, and ensure the code is production-safe."
-    )
-    target_lang   = "python"
-    custom_tests  = ""
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  LAUNCH BUTTONS
-# ─────────────────────────────────────────────────────────────────────
-st.write("")
-bc1, bc2, bc3 = st.columns([5,1,1])
-with bc1:
-    run_btn = st.button("🚀  Start Multi-LLM Review Workflow", type="primary", use_container_width=True)
-with bc2:
-    if st.button("🔄 Reset", use_container_width=True):
-        st.session_state.workflow_result = None
-        st.session_state.pop("last_task", None)
-        st.rerun()
-with bc3:
-    history_count = len(st.session_state.get("history", []))
-    if st.button(f"📜 History ({history_count})", use_container_width=True):
-        st.session_state["show_history"] = not st.session_state.get("show_history", False)
-        st.rerun()
+        pass
+    return ""
+
+LOGO_ICON_SRC = _svg_b64(str(Path(__file__).parent / "assets" / "logo_icon.svg"))
+LOGO_PRIMARY_SRC = _svg_b64(str(Path(__file__).parent / "assets" / "logo.svg"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  3. SESSION STATE INITIALIZATION
+# ─────────────────────────────────────────────────────────────────────────────
+if "theme_mode" not in st.session_state:
+    st.session_state.theme_mode = "light"  # Default is clean, human light theme
+
+if "active_page" not in st.session_state:
+    st.session_state.active_page = "Dashboard"
 
 if "workflow_result" not in st.session_state:
     st.session_state.workflow_result = None
-if "history" not in st.session_state:
-    st.session_state.history = []
 
+if "provider_choice" not in st.session_state:
+    st.session_state.provider_choice = "mock"  # Smart Simulator works out-of-the-box
 
-# ─────────────────────────────────────────────────────────────────────
-#  WORKFLOW HISTORY PANEL
-# ─────────────────────────────────────────────────────────────────────
-if st.session_state.get("show_history") and st.session_state.history:
-    with st.expander(f"📜 Workflow History — {len(st.session_state.history)} run(s)", expanded=True):
-        for i, h in enumerate(reversed(st.session_state.history)):
-            col_h1, col_h2, col_h3, col_h4 = st.columns([3,1,1,1])
-            with col_h1: st.write(f"**{h['prompt'][:70]}…**" if len(h["prompt"])>70 else f"**{h['prompt']}**")
-            with col_h2: st.write(f"`{h['status']}`")
-            with col_h3: st.write(f"{h['rounds']} rounds")
-            with col_h4: st.write(h["time"])
+if "gen_model_setting" not in st.session_state:
+    st.session_state.gen_model_setting = "qwen2.5:0.5b"
 
+if "rev_model_setting" not in st.session_state:
+    st.session_state.rev_model_setting = "mistral:latest"
 
-# ─────────────────────────────────────────────────────────────────────
-#  EXECUTION ENGINE
-# ─────────────────────────────────────────────────────────────────────
-if run_btn:
-    if not task_prompt.strip() and not existing_code:
-        st.error("⚠️  Please enter a task prompt or paste code to review.")
+if "val_model_setting" not in st.session_state:
+    st.session_state.val_model_setting = "deepseek-coder:1.3b"
+
+if "max_retries_setting" not in st.session_state:
+    st.session_state.max_retries_setting = 3
+
+if "sandbox_enabled" not in st.session_state:
+    st.session_state.sandbox_enabled = True
+
+if "ast_syntax_enabled" not in st.session_state:
+    st.session_state.ast_syntax_enabled = True
+
+if "temperature_setting" not in st.session_state:
+    st.session_state.temperature_setting = 0.2
+
+if "ollama_url_setting" not in st.session_state:
+    st.session_state.ollama_url_setting = "http://localhost:11434"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  4. DYNAMIC HUMAN DESIGN SYSTEM (LIGHT & DARK THEMES)
+# ─────────────────────────────────────────────────────────────────────────────
+is_dark = st.session_state.theme_mode == "dark"
+
+if not is_dark:
+    # ── LIGHT THEME DESIGN TOKENS (Natural, Professional, Human Product) ──
+    css_theme = """
+    :root {
+        --bg-base: #F8FAFC;
+        --bg-surface: #FFFFFF;
+        --bg-surface-alt: #F1F5F9;
+        --bg-input: #FFFFFF;
+        --border-subtle: #E2E8F0;
+        --border-strong: #CBD5E1;
+        --text-primary: #0F172A;
+        --text-secondary: #334155;
+        --text-muted: #64748B;
+        --text-subtle: #94A3B8;
+        --primary: #2563EB;
+        --primary-hover: #1D4ED8;
+        --primary-light: #EFF6FF;
+        --primary-border: #BFDBFE;
+        --success: #059669;
+        --success-bg: #ECFDF5;
+        --success-border: #A7F3D0;
+        --warning: #D97706;
+        --warning-bg: #FFFBEB;
+        --warning-border: #FDE68A;
+        --danger: #DC2626;
+        --danger-bg: #FEF2F2;
+        --danger-border: #FECACA;
+        --sidebar-bg: #FFFFFF;
+        --sidebar-border: #E2E8F0;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+        --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+        --code-bg: #0F172A;
+        --code-color: #E2E8F0;
+    }
+    """
+else:
+    # ── DARK THEME DESIGN TOKENS (Refined, Restrained Slate/Charcoal) ────
+    css_theme = """
+    :root {
+        --bg-base: #0B0F17;
+        --bg-surface: #131B2A;
+        --bg-surface-alt: #1A2436;
+        --bg-input: #131B2A;
+        --border-subtle: #233045;
+        --border-strong: #334460;
+        --text-primary: #F8FAFC;
+        --text-secondary: #CBD5E1;
+        --text-muted: #94A3B8;
+        --text-subtle: #64748B;
+        --primary: #3B82F6;
+        --primary-hover: #60A5FA;
+        --primary-light: rgba(59, 130, 246, 0.12);
+        --primary-border: rgba(59, 130, 246, 0.3);
+        --success: #10B981;
+        --success-bg: rgba(16, 185, 129, 0.1);
+        --success-border: rgba(16, 185, 129, 0.25);
+        --warning: #F59E0B;
+        --warning-bg: rgba(245, 158, 11, 0.1);
+        --warning-border: rgba(245, 158, 11, 0.25);
+        --danger: #EF4444;
+        --danger-bg: rgba(239, 68, 68, 0.1);
+        --danger-border: rgba(239, 68, 68, 0.25);
+        --sidebar-bg: #0E1522;
+        --sidebar-border: #1E2B3E;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+        --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+        --code-bg: #070B12;
+        --code-color: #F1F5F9;
+    }
+    """
+
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+{css_theme}
+
+/* ── Base App Reset & Typography ── */
+html, body, [class*="css"] {{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    background-color: var(--bg-base) !important;
+    color: var(--text-primary) !important;
+}}
+
+#MainMenu, footer, header {{
+    visibility: hidden;
+}}
+
+.block-container {{
+    padding-top: 1.2rem !important;
+    padding-bottom: 2.5rem !important;
+    max-width: 1440px !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
+}}
+
+/* ── Left Sidebar Navigation ── */
+section[data-testid="stSidebar"] {{
+    background-color: var(--sidebar-bg) !important;
+    border-right: 1px solid var(--sidebar-border) !important;
+    box-shadow: 1px 0 3px rgba(0, 0, 0, 0.02) !important;
+    width: 290px !important;
+}}
+
+section[data-testid="stSidebar"] .block-container {{
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    padding-top: 1.2rem !important;
+}}
+
+/* ── Sidebar Brand Header ── */
+.sb-brand-box {{
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.5rem 1rem;
+    margin-bottom: 0.8rem;
+    border-bottom: 1px solid var(--border-subtle);
+}}
+
+.sb-brand-logo {{
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    flex-shrink: 0;
+}}
+
+.sb-brand-title {{
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+}}
+
+.sb-brand-title span {{
+    color: var(--primary);
+}}
+
+.sb-brand-tagline {{
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-top: 0.15rem;
+    letter-spacing: 0.02em;
+}}
+
+/* ── Navigation Section Label ── */
+.sb-nav-label {{
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin: 0.8rem 0.5rem 0.4rem;
+}}
+
+/* ── Sidebar Navigation Buttons ── */
+section[data-testid="stSidebar"] .stButton > button {{
+    width: 100% !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    background-color: transparent !important;
+    border: 1px solid transparent !important;
+    color: var(--text-secondary) !important;
+    font-size: 0.84rem !important;
+    font-weight: 500 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 8px !important;
+    transition: all 0.15s ease-in-out !important;
+    margin-bottom: 0.2rem !important;
+}}
+
+section[data-testid="stSidebar"] .stButton > button:hover {{
+    background-color: var(--bg-surface-alt) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-subtle) !important;
+}}
+
+/* Active Page Highlight Button */
+section[data-testid="stSidebar"] .stButton > button.active-nav {{
+    background-color: var(--primary-light) !important;
+    color: var(--primary) !important;
+    font-weight: 700 !important;
+    border: 1px solid var(--primary-border) !important;
+    box-shadow: var(--shadow-sm) !important;
+}}
+
+/* ── Card Surfaces & Containers ── */
+.pro-card {{
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 1.25rem 1.4rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}}
+
+.pro-card:hover {{
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+}}
+
+/* ── Top Header Section ── */
+.app-header {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 0 1.2rem;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 1.5rem;
+}}
+
+.app-title-block {{
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}}
+
+.app-header-logo {{
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+}}
+
+.app-title {{
+    font-size: 1.45rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -0.025em;
+    line-height: 1.15;
+    margin: 0;
+}}
+
+.app-subtitle {{
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-top: 0.2rem;
+}}
+
+/* ── Status Pills & Badges ── */
+.pro-pill {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 9999px;
+    font-size: 0.73rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+}}
+
+.pill-online {{
+    background: var(--success-bg);
+    color: var(--success);
+    border-color: var(--success-border);
+}}
+
+.pill-simulator {{
+    background: var(--primary-light);
+    color: var(--primary);
+    border-color: var(--primary-border);
+}}
+
+.pill-warning {{
+    background: var(--warning-bg);
+    color: var(--warning);
+    border-color: var(--warning-border);
+}}
+
+.pill-danger {{
+    background: var(--danger-bg);
+    color: var(--danger);
+    border-color: var(--danger-border);
+}}
+
+/* ── Metric Stat Cards ── */
+.stat-card {{
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    box-shadow: var(--shadow-sm);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}}
+
+.stat-label {{
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+}}
+
+.stat-value {{
+    font-size: 1.65rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    line-height: 1.1;
+    margin-bottom: 0.2rem;
+}}
+
+.stat-sub {{
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}}
+
+/* ── Bug Severity Cards ── */
+.bug-card {{
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-left: 4px solid var(--primary);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.65rem;
+    box-shadow: var(--shadow-sm);
+}}
+
+.bug-card.critical {{ border-left-color: var(--danger); }}
+.bug-card.major {{ border-left-color: var(--warning); }}
+.bug-card.minor {{ border-left-color: var(--primary); }}
+.bug-card.suggestion {{ border-left-color: #8B5CF6; }}
+
+.bug-header {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+    flex-wrap: wrap;
+}}
+
+.bug-desc {{
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 0.4rem;
+}}
+
+.bug-fix-box {{
+    background: var(--bg-surface-alt);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 0.45rem 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.77rem;
+    color: var(--text-primary);
+}}
+
+/* ── Workflow Stepper ── */
+.flow-stepper {{
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 0.9rem 1.2rem;
+    margin-bottom: 1.3rem;
+    gap: 0.3rem;
+}}
+
+.flow-step-node {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 95px;
+    text-align: center;
+}}
+
+.flow-step-icon {{
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    margin-bottom: 0.35rem;
+    border: 1.5px solid var(--border-strong);
+    background: var(--bg-surface-alt);
+}}
+
+.flow-step-icon.active {{
+    background: var(--primary-light);
+    border-color: var(--primary);
+    color: var(--primary);
+}}
+
+.flow-step-icon.done {{
+    background: var(--success-bg);
+    border-color: var(--success);
+    color: var(--success);
+}}
+
+.flow-step-name {{
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+}}
+
+.flow-step-sub {{
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+}}
+
+.flow-step-arrow {{
+    color: var(--text-subtle);
+    font-size: 0.9rem;
+    margin-bottom: 1.2rem;
+    flex-shrink: 0;
+}}
+
+/* ── Empty State ── */
+.empty-box {{
+    text-align: center;
+    padding: 3.5rem 1.5rem;
+    background: var(--bg-surface);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 12px;
+    margin: 1rem 0;
+}}
+
+.empty-icon {{
+    font-size: 2.8rem;
+    margin-bottom: 0.8rem;
+    color: var(--text-muted);
+}}
+
+.empty-title {{
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.35rem;
+}}
+
+.empty-sub {{
+    font-size: 0.84rem;
+    color: var(--text-muted);
+    max-width: 500px;
+    margin: 0 auto 1.2rem;
+    line-height: 1.6;
+}}
+</style>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  5. BACKEND CONNECTIONS & DATA HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=20, show_spinner=False)
+def probe_ollama_status(url: str = "http://localhost:11434"):
+    """Live probe to local Ollama API without crashing."""
+    try:
+        p = OllamaProvider(model_name="_probe", base_url=url)
+        if p.check_health():
+            models = p.get_available_models()
+            return True, models, "Online"
+        return False, [], "Offline (Service unreachable)"
+    except Exception as e:
+        return False, [], f"Offline ({str(e)[:45]})"
+
+ollama_online, ollama_models, ollama_status_msg = probe_ollama_status(
+    st.session_state.ollama_url_setting
+)
+
+history_store = HistoryStore()
+
+def save_result_to_history(result: WorkflowResult, elapsed_sec: float) -> str:
+    """Bridges WorkflowResult and persists cleanly to HistoryStore as a WorkflowReport."""
+    run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    # Map final status
+    if result.status == "APPROVED":
+        fin_status = WorkflowStatus.PASSED
+        stop_reason = "Code passed all multi-agent reviews and automated verification."
+    elif result.status == "MAX_RETRIES_REACHED":
+        fin_status = WorkflowStatus.RETRY_LIMIT_REACHED
+        stop_reason = f"Maximum attempt bound ({result.rounds_count}) reached."
     else:
-        # ── Build config ──────────────────────────────────────────
-        config = WorkflowConfig(
-            provider_type=provider_choice,
-            generator_model=gen_model,
-            reviewer_model=rev_model,
-            validator_model=val_model if enable_val else "",
-            max_retries=max_retries,
-            enable_sandbox_execution=enable_sandbox,
-            enable_third_llm_validator=enable_val,
-            temperature=temperature,
+        fin_status = WorkflowStatus.REVIEW_FAILED
+        stop_reason = f"Workflow halted: {result.status}"
+
+    iteration_records: List[IterationRecord] = []
+    for step in result.iterations:
+        # Execution result
+        if step.execution:
+            texec = TestExecutionResult(
+                status=TestStatus.PASSED if step.execution.success else TestStatus.FAILED,
+                total_tests=1,
+                passed_tests=1 if step.execution.success else 0,
+                failed_tests=0 if step.execution.success else 1,
+                stdout=step.execution.stdout or "",
+                stderr=step.execution.stderr or "",
+                duration_seconds=step.execution.execution_time_ms / 1000.0,
+            )
+            syn = SyntaxCheckResult(
+                is_valid=step.execution.syntax_valid,
+                error_message=step.execution.syntax_error,
+            )
+        else:
+            texec = TestExecutionResult(status=TestStatus.NOT_RUN)
+            syn = SyntaxCheckResult(is_valid=True)
+
+        # Review Result
+        issues = []
+        rev_verdict = ReviewVerdict.PASS
+        rev_summary = "All criteria satisfied."
+        if step.reviews:
+            rev = step.reviews[0]
+            rev_verdict = ReviewVerdict.PASS if rev.status == ReviewStatus.APPROVED else ReviewVerdict.FAIL
+            rev_summary = rev.summary
+            for b in rev.bugs:
+                cat_val = b.category.value if hasattr(b.category, "value") else str(b.category)
+                sev_val = b.severity.value if hasattr(b.severity, "value") else str(b.severity)
+                try:
+                    sev_enum = IssueSeverity(sev_val.upper())
+                except Exception:
+                    sev_enum = IssueSeverity.MEDIUM
+                issues.append(ReviewIssue(
+                    issue_type=cat_val,
+                    severity=sev_enum,
+                    line_number=b.line_number,
+                    description=b.description,
+                    suggested_fix=b.suggested_fix,
+                ))
+
+        rres = ReviewResult(
+            verdict=rev_verdict,
+            summary=rev_summary,
+            issues=issues,
+            requirements_met=(rev_verdict == ReviewVerdict.PASS),
         )
 
-        prog_ph = st.empty()
-        log_ph  = st.empty()
+        iteration_records.append(IterationRecord(
+            iteration_number=step.round_idx + 1,
+            code=step.code,
+            generator_model=result.generator_model,
+            reviewer_model=result.reviewer_model,
+            syntax_result=syn,
+            test_result=texec,
+            review_result=rres,
+            duration_seconds=round(elapsed_sec / max(1, len(result.iterations)), 2),
+            timestamp=now_iso,
+        ))
 
-        EVENTS = {
-            "workflow_started":    (5,  "🚀 Initialising multi-LLM workflow…"),
-            "generation_started":  (15, f"✍️  LLM 1 ({gen_model}) writing initial code…"),
-            "generation_completed":(35, "✅ Code written — sending to sandbox…"),
-            "execution_started":   (45, "⚡ Executing in secure subprocess sandbox…"),
-            "execution_completed": (55, "✅ Sandbox run complete — passing to reviewers…"),
-            "review_started":      (65, f"🧐 LLM 2 ({rev_model}) inspecting code…"),
-            "review_completed":    (73, "📋 Review complete — running security validator…"),
-            "validation_started":  (81, f"🛡️  LLM 3 ({val_model}) performing security audit…"),
-            "validation_completed":(88, "✅ Validation complete — checking approval…"),
-            "fix_started":         (91, "🔧 Bugs found — LLM 1 applying targeted fixes…"),
-            "fix_completed":       (94, "✅ Fix applied — re-running review cycle…"),
-            "round_approved":      (98, "🏆 Code APPROVED!"),
-            "max_retries_reached": (99, "⚠️  Max retry cycles reached — returning best code."),
-            "workflow_completed":  (100,"🎉 Workflow completed!"),
-        }
-
-        def on_event(evt: str, data: dict):
-            if evt in EVENTS:
-                pct, msg = EVENTS[evt]
-                prog_ph.progress(pct, text=msg)
-
-        try:
-            with st.spinner("Multi-LLM agents communicating, reviewing, and iteratively fixing…"):
-                t_start      = time.time()
-                orchestrator = WorkflowOrchestrator(config=config)
-                result = orchestrator.run(
-                    task_prompt=task_prompt,
-                    target_language=target_lang,
-                    unit_tests=custom_tests.strip() or None,
-                    existing_code=existing_code,
-                    on_event=on_event,
-                )
-                elapsed = time.time() - t_start
-
-            prog_ph.empty()
-            st.session_state.workflow_result = result
-
-            # Save to history
-            st.session_state.history.append({
-                "prompt": task_prompt[:100],
-                "status": result.status,
-                "rounds": result.rounds_count,
-                "bugs":   result.total_bugs_detected,
-                "time":   datetime.now().strftime("%H:%M:%S"),
-                "elapsed": f"{elapsed:.1f}s",
-            })
-
-            st.toast(f"✅ Workflow done in {elapsed:.1f}s!", icon="🏆")
-
-        except Exception as e:
-            prog_ph.empty()
-            err_msg = str(e)
-
-            # ── Smart Error Recovery Banner ──────────────────────
-            is_llama_err  = "llama-server" in err_msg.lower() or "binary not found" in err_msg.lower()
-            is_model_err  = "not pulled" in err_msg.lower() or "not available" in err_msg.lower()
-            is_conn_err   = "connection" in err_msg.lower() or "not reachable" in err_msg.lower()
-
-            if is_llama_err or is_model_err or is_conn_err:
-                if is_llama_err:
-                    fix_title = "🔧 Ollama llama-server binary not found"
-                    fix_body  = (
-                        "Your Ollama installation is missing the GPU inference binary. "
-                        "This happens when Ollama installs without a GPU backend.<br/><br/>"
-                        "<strong>Fastest fix:</strong> Click the button below to instantly switch to "
-                        "<span class='fix-code'>⚡ Smart Simulator</span> — same features, no GPU needed."
-                    )
-                elif is_model_err:
-                    fix_title = "📥 Model not downloaded"
-                    fix_body  = (
-                        f"The model <span class='fix-code'>{gen_model}</span> hasn't been pulled yet.<br/><br/>"
-                        "Use the sidebar <strong>Pull Ollama Model</strong> panel to download it, "
-                        "or switch to Smart Simulator below."
-                    )
-                else:
-                    fix_title = "🔌 Ollama server not running"
-                    fix_body  = (
-                        "Ollama is not running. Start the <strong>Ollama Desktop</strong> app "
-                        "or run <span class='fix-code'>ollama serve</span> in a terminal, then try again.<br/><br/>"
-                        "Or instantly switch to Smart Simulator — no setup needed."
-                    )
-
-                st.markdown(f"""
-                <div class="fix-banner">
-                  <div class="fix-title">{fix_title}</div>
-                  <div class="fix-body">{fix_body}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                fix_c1, fix_c2 = st.columns([2,3])
-                with fix_c1:
-                    if st.button("⚡ Switch to Smart Simulator", type="primary", use_container_width=True):
-                        st.session_state.provider_choice = "mock"
-                        st.rerun()
-                with fix_c2:
-                    st.markdown(
-                        "<small>Smart Simulator = same multi-LLM workflow, realistic bugs & reviews, "
-                        "no GPU or internet required.</small>",
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.error(f"❌ Workflow Error: {err_msg}", icon="❌")
-
-            with st.expander("🐛 Full Error Details (for debugging)"):
-                st.code(traceback.format_exc(), language="python")
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  RESULTS DASHBOARD
-# ─────────────────────────────────────────────────────────────────────
-if st.session_state.workflow_result:
-    res: WorkflowResult = st.session_state.workflow_result
-
-    st.markdown("---")
-
-    # ── Status banner ─────────────────────────────────────────────
-    status_cfg = {
-        "APPROVED":           ("#10B981", "✅", "Code passed all reviews and was approved!"),
-        "MAX_RETRIES_REACHED":("#F59E0B", "⚠️", f"Max retry cycles ({max_retries}) reached. Returning best version."),
-    }.get(res.status, ("#EF4444","❌","Workflow did not complete successfully."))
-    st.markdown(
-        f'<div style="background:{status_cfg[0]}18;border:1px solid {status_cfg[0]}44;border-radius:10px;'
-        f'padding:.7rem 1.1rem;margin-bottom:.9rem;display:flex;align-items:center;gap:.6rem;">'
-        f'<span style="font-size:1.3rem;">{status_cfg[1]}</span>'
-        f'<span style="font-weight:700;color:{status_cfg[0]};font-size:.92rem;">{status_cfg[2]}</span>'
-        f'</div>',
-        unsafe_allow_html=True
+    report = WorkflowReport(
+        run_id=run_id,
+        task_description=result.task_prompt,
+        generator_model=result.generator_model,
+        reviewer_model=result.reviewer_model,
+        iterations=iteration_records,
+        final_status=fin_status,
+        stop_reason=stop_reason,
+        final_code=result.final_code,
+        total_attempts=result.rounds_count,
+        max_attempts=st.session_state.max_retries_setting,
+        start_time=now_iso,
+        end_time=now_iso,
+        total_duration_seconds=round(elapsed_sec, 2),
+        unresolved_issues=[],
+        test_suite_provided=bool(result.final_execution and result.final_execution.test_results),
     )
 
-    # ── Metrics ───────────────────────────────────────────────────
-    runtime_ms  = res.final_execution.execution_time_ms if res.final_execution else 0
-    all_bugs    = [b for step in res.iterations for r in step.reviews for b in r.bugs]
-    critical_ct = sum(1 for b in all_bugs if b.severity.upper() == "CRITICAL")
-    avg_score   = (sum(r.overall_score for step in res.iterations for r in step.reviews) /
-                   max(1, sum(len(step.reviews) for step in res.iterations)))
+    history_store.save_report(report)
+    history_store.save_final_code(run_id, result.final_code)
+    for idx, it in enumerate(iteration_records):
+        history_store.save_code_iteration(run_id, idx + 1, it.code)
 
-    m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
-    _mdata = [
-        (m1, res.status,                       "Final Verdict",      status_cfg[0],  ""),
-        (m2, str(res.rounds_count),             "Review Rounds",      "#3B82F6",      ""),
-        (m3, str(res.total_bugs_detected),      "Bugs Detected",      "#EF4444",      ""),
-        (m4, str(res.total_bugs_fixed),         "Bugs Fixed",         "#10B981",      ""),
-        (m5, str(critical_ct),                  "Critical Issues",    "#F59E0B",      ""),
-        (m6, f"{avg_score:.1f}/10",             "Avg Review Score",   "#8B5CF6",      ""),
-        (m7, f"{runtime_ms:.0f}ms",             "Sandbox Runtime",    "#60A5FA",      ""),
-    ]
-    for col, val, lbl, col_s, sub in _mdata:
-        with col:
-            st.markdown(
-                f'<div class="mcard"><div class="mcard-val" style="color:{col_s};">{val}</div>'
-                f'<div class="mcard-lbl">{lbl}</div></div>',
-                unsafe_allow_html=True
-            )
+    return run_id
 
-    st.write("")
+def load_run_to_active_state(run_id: str) -> bool:
+    """Loads a historical run from disk into active session state for deep inspection."""
+    report = history_store.load_report(run_id)
+    if not report:
+        return False
 
-    # ── TABS ─────────────────────────────────────────────────────
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
-        "💬 Multi-LLM Chat",
-        "🔍 Code Diff",
-        "🏆 Final Code",
-        "📊 Quality & Security",
-        "🧪 Sandbox Log",
-        "📄 Audit Report",
-        "📥 Export",
-    ])
+    iterations = []
+    messages = []
+    all_bugs_detected = 0
 
-    # ══════════ TAB 1: MULTI-LLM CONVERSATION ════════════════════
-    with t1:
-        st.markdown("### 💬 Multi-LLM Agent Communication History")
-        st.caption(
-            f"{len(res.iterations)} round(s) · {len(res.messages)} agent messages · "
-            f"Generator: `{res.generator_model}` · Reviewer: `{res.reviewer_model}`"
+    for it in report.iterations:
+        bugs = []
+        if it.review_result and it.review_result.issues:
+            for iss in it.review_result.issues:
+                all_bugs_detected += 1
+                try:
+                    cat_e = getattr(BugCategory, iss.issue_type.upper(), BugCategory.LOGIC)
+                except Exception:
+                    cat_e = BugCategory.LOGIC
+                try:
+                    sev_e = getattr(SeverityLevel, iss.severity.value.upper(), SeverityLevel.MAJOR)
+                except Exception:
+                    sev_e = SeverityLevel.MAJOR
+                bugs.append(BugItem(
+                    line_number=iss.line_number,
+                    category=cat_e,
+                    severity=sev_e,
+                    description=iss.description,
+                    suggested_fix=iss.suggested_fix or "",
+                    resolved=False,
+                ))
+
+        rf = ReviewFeedback(
+            reviewer_name="Reviewer Agent",
+            reviewer_model=it.reviewer_model,
+            status=ReviewStatus.APPROVED if (it.review_result and it.review_result.verdict == ReviewVerdict.PASS) else ReviewStatus.CHANGES_REQUESTED,
+            has_bugs=len(bugs) > 0,
+            summary=it.review_result.summary if it.review_result else "Completed review.",
+            bugs=bugs,
+            overall_score=9 if (it.review_result and it.review_result.verdict == ReviewVerdict.PASS) else 6,
         )
 
-        for step in res.iterations:
-            is_last  = (step.round_idx == len(res.iterations)-1)
-            st_icon  = "✅" if step.status=="APPROVED" else "🔄"
-            step_bugs = [b for r in step.reviews for b in r.bugs]
+        ex = ExecutionResult(
+            success=it.test_result.status == TestStatus.PASSED,
+            stdout=it.test_result.stdout or "",
+            stderr=it.test_result.stderr or "",
+            exit_code=0 if it.test_result.status == TestStatus.PASSED else 1,
+            execution_time_ms=it.test_result.duration_seconds * 1000.0,
+            syntax_valid=it.syntax_result.is_valid,
+            syntax_error=it.syntax_result.error_message,
+        )
 
-            with st.expander(
-                f"📍 Round {step.round_idx}  ·  {st_icon} {step.status}  ·  "
-                f"{len(step_bugs)} bug(s) found",
-                expanded=is_last
-            ):
-                # Agent messages
-                step_msgs = [m for m in res.messages if m.round_idx == step.round_idx]
-                if step_msgs:
-                    for msg in step_msgs:
-                        cls, ico, col_m = _bubble_class(msg.sender_role)
-                        body = msg.content[:500] + ("…" if len(msg.content)>500 else "")
-                        st.markdown(f"""
-                        <div class="cb {cls}">
-                          <div class="cb-hdr">
-                            <span style="font-size:.95rem;">{ico}</span>
-                            <span class="cb-who" style="color:{col_m};">{msg.sender_role}</span>
-                            <span class="cb-mdl">{msg.sender_model}</span>
-                            <span class="cb-ts">⏱ {msg.timestamp}</span>
-                          </div>
-                          <div class="cb-body">{body}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+        iterations.append(IterationStep(
+            round_idx=it.iteration_number - 1,
+            code=it.code,
+            generator_explanation=f"Iteration {it.iteration_number} solution snapshot.",
+            execution=ex,
+            reviews=[rf],
+            status="APPROVED" if rf.status == ReviewStatus.APPROVED else "CHANGES_REQUESTED",
+        ))
 
-                # Review score bars
-                if step.reviews:
-                    st.markdown("**Review Scores:**")
-                    rc = st.columns(len(step.reviews))
-                    for i, rev in enumerate(step.reviews):
-                        with rc[i]:
-                            sc_lbl = "✅ APPROVED" if rev.status=="APPROVED" else "🔄 CHANGES REQUESTED"
-                            sc_col = "#10B981" if rev.status=="APPROVED" else "#F59E0B"
-                            st.markdown(
-                                f'**{rev.reviewer_name}**<br/>'
-                                f'<span style="font-size:.75rem;color:{sc_col};font-weight:700;">{sc_lbl}</span>',
-                                unsafe_allow_html=True
-                            )
-                            st.markdown(_score_bar(rev.overall_score), unsafe_allow_html=True)
-                            st.caption(rev.summary[:200])
+        # Reconstruct transcript messages
+        messages.append(AgentMessage(
+            sender_role="Generator",
+            sender_model=it.generator_model,
+            round_idx=it.iteration_number - 1,
+            content=f"Generated code candidate for iteration {it.iteration_number}.",
+        ))
+        messages.append(AgentMessage(
+            sender_role="Reviewer",
+            sender_model=it.reviewer_model,
+            round_idx=it.iteration_number - 1,
+            content=rf.summary,
+        ))
 
-                # Bug list
-                if step_bugs:
-                    st.markdown("**🐛 Bugs Detected This Round:**")
-                    for b in step_bugs:
-                        sev = b.severity.lower() if hasattr(b.severity,"lower") else str(b.severity).lower()
-                        line_txt = f"`Line {b.line_number}` " if b.line_number else ""
-                        st.markdown(f"""
-                        <div class="bug bug-{sev}">
-                          <div class="bug-hdr">
-                            <span class="bdg bdg-{sev}">{b.severity}</span>
-                            <span style="font-size:.74rem;font-weight:700;color:#94A3B8;">[{b.category}]</span>
-                            <span style="font-size:.72rem;color:#64748B;font-family:var(--mono);">{line_txt}</span>
-                          </div>
-                          <div class="bug-desc">{b.description}</div>
-                          <div class="bug-fix">💡 {b.suggested_fix}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.success("✅ No bugs in this round!", icon="✅")
+    final_st = "APPROVED" if report.final_status == WorkflowStatus.PASSED else (
+        "MAX_RETRIES_REACHED" if report.final_status == WorkflowStatus.RETRY_LIMIT_REACHED else "FAILED"
+    )
 
-    # ══════════ TAB 2: CODE DIFF ══════════════════════════════════
-    with t2:
-        st.markdown("### 🔍 Code Changes (Diff View)")
-        if len(res.iterations) > 1:
-            rounds = list(range(len(res.iterations)-1))
-            dr = st.selectbox("Compare", rounds, format_func=lambda r: f"Round {r} → Round {r+1}", index=len(rounds)-1)
-            code_a = res.iterations[dr].code
-            code_b = res.iterations[dr+1].code
-            diff   = compute_unified_diff(code_a, code_b, f"Round {dr}", f"Round {dr+1}")
+    wf_res = WorkflowResult(
+        task_prompt=report.task_description,
+        target_language="python",
+        final_code=report.final_code,
+        status=final_st,
+        rounds_count=report.total_attempts,
+        iterations=iterations,
+        messages=messages,
+        total_bugs_detected=all_bugs_detected,
+        total_bugs_fixed=all_bugs_detected if final_st == "APPROVED" else max(0, all_bugs_detected - 1),
+        final_execution=iterations[-1].execution if iterations else None,
+        generator_model=report.generator_model,
+        reviewer_model=report.reviewer_model,
+        provider="persisted",
+    )
 
-            added   = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
-            removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
-            st.markdown(
-                f'<div class="diff-stat">'
-                f'<span class="diff-added">+{added} lines added</span>'
-                f'<span class="diff-removed">−{removed} lines removed</span>'
-                f'<span class="diff-files">1 file changed</span>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-            st.code(diff, language="diff")
-        else:
-            st.success("✅ Code approved in Round 0 — no changes needed!", icon="🏆")
+    st.session_state.workflow_result = wf_res
+    return True
 
-    # ══════════ TAB 3: FINAL CODE ═════════════════════════════════
-    with t3:
-        st.markdown("### 🏆 Final Approved Source Code")
-        fc1, fc2 = st.columns([4,1])
-        with fc1:
-            st.markdown(
-                f'Provider: `{res.provider}` · Generator: `{res.generator_model}` · '
-                f'Language: `{res.target_language}` · '
-                f'<span class="bdg bdg-{"approved" if res.status=="APPROVED" else "changes"}">'
-                f'{"✅ APPROVED" if res.status=="APPROVED" else "⚠️ "+res.status}</span>',
-                unsafe_allow_html=True
-            )
-        with fc2:
-            loc = len([l for l in res.final_code.splitlines() if l.strip()])
-            st.metric("Lines of Code", loc)
+# ─────────────────────────────────────────────────────────────────────────────
+#  6. REAL-WORLD SCENARIO PRESETS
+# ─────────────────────────────────────────────────────────────────────────────
+SCENARIO_PRESETS = {
+    "Palindrome Checker (NLP & String Processing)": {
+        "domain": "String Processing & Sanitation",
+        "prompt": (
+            "Write a Python function `is_palindrome(s: str) -> bool` that checks if a string is a palindrome. "
+            "Must ignore punctuation, whitespace, and casing. Correctly handle None, empty strings, and Unicode characters."
+        ),
+        "tests": (
+            "assert is_palindrome('A man, a plan, a canal: Panama') == True\n"
+            "assert is_palindrome('race a car') == False\n"
+            "assert is_palindrome('') == True\n"
+            "assert is_palindrome(None) == False"
+        ),
+    },
+    "Factorial Function (Math APIs & Edge Guards)": {
+        "domain": "Mathematics & Boundaries",
+        "prompt": (
+            "Write a Python function `factorial(n: int) -> int` that computes n! iteratively. "
+            "Raise ValueError for negative inputs and TypeError for non-integer types. Handle n=0 and n=1."
+        ),
+        "tests": (
+            "assert factorial(0) == 1\n"
+            "assert factorial(5) == 120\n"
+            "try:\n    factorial(-1)\n    assert False, 'Expected ValueError'\nexcept ValueError:\n    pass"
+        ),
+    },
+    "Fibonacci Generator (Dynamic Programming O(1) Space)": {
+        "domain": "Algorithms & Optimization",
+        "prompt": (
+            "Write a Python function `fibonacci(n: int) -> int` returning the nth Fibonacci number "
+            "using O(n) time and O(1) space. Raise ValueError for negative n. Handle n=0 and n=1."
+        ),
+        "tests": "assert fibonacci(0) == 0\nassert fibonacci(1) == 1\nassert fibonacci(10) == 55",
+    },
+    "Binary Search (Search Engine Indexing)": {
+        "domain": "Search Algorithms",
+        "prompt": (
+            "Write a Python function `binary_search(arr: list, target: int) -> int` using iterative binary search "
+            "on a sorted list. Return the index if found, -1 otherwise. Safely handle empty arrays, None, and duplicates."
+        ),
+        "tests": (
+            "assert binary_search([1,3,5,7,9], 5) == 2\n"
+            "assert binary_search([], 3) == -1\n"
+            "assert binary_search([1,2,3], 99) == -1"
+        ),
+    },
+    "Merge Sort (Data Pipeline Ingestion)": {
+        "domain": "Sorting & Stability",
+        "prompt": (
+            "Write a Python function `merge_sort(arr: list) -> list` implementing a stable merge sort. "
+            "Handle empty arrays, single-element lists, and duplicate values. Return a newly sorted list without mutating input."
+        ),
+        "tests": (
+            "assert merge_sort([3,1,2]) == [1,2,3]\n"
+            "assert merge_sort([]) == []\n"
+            "assert merge_sort([5]) == [5]"
+        ),
+    },
+    "LRU Cache (High-Performance Caching Layer)": {
+        "domain": "System Design",
+        "prompt": (
+            "Implement an `LRUCache` class in Python with `get(key)` returning -1 on miss and "
+            "`put(key, value)` in O(1) time using collections.OrderedDict. Evict the LRU item when at capacity."
+        ),
+        "tests": (
+            "c = LRUCache(2)\n"
+            "c.put(1, 1)\n"
+            "c.put(2, 2)\n"
+            "assert c.get(1) == 1\n"
+            "c.put(3, 3)\n"
+            "assert c.get(2) == -1"
+        ),
+    },
+    "SQL Injection Sanitizer (Security Guardrail)": {
+        "domain": "Application Security (CWE-89)",
+        "prompt": (
+            "Write a Python function `is_safe_query(user_input: str) -> bool` that detects SQL injection "
+            "patterns (UNION, DROP, --, ;, xp_, OR 1=1) using regex. Return False if malicious. Handle None gracefully."
+        ),
+        "tests": (
+            "assert is_safe_query(\"Robert'); DROP TABLE users;--\") == False\n"
+            "assert is_safe_query('John Smith') == True\n"
+            "assert is_safe_query(None) == False"
+        ),
+    },
+    "Moving Average (Time-Series & Financial Signal)": {
+        "domain": "Data Science & Finance",
+        "prompt": (
+            "Write a Python function `moving_average(data: list, window: int) -> list` that computes a "
+            "simple moving average. Handle edge cases: empty list, window > len(data), window <= 0, and None."
+        ),
+        "tests": (
+            "assert moving_average([1,2,3,4,5], 3) == [2.0, 3.0, 4.0]\n"
+            "assert moving_average([], 3) == []\n"
+            "assert moving_average([1,2], 5) == []"
+        ),
+    },
+    "File Path Sanitizer (Cloud Storage CWE-22)": {
+        "domain": "Security & Storage",
+        "prompt": (
+            "Write a Python function `sanitize_path(path: str) -> str` that prevents directory traversal attacks "
+            "(e.g. `../`), removes null bytes, and normalizes the path. Raise ValueError if path is None or unsafe."
+        ),
+        "tests": (
+            "assert '/' not in sanitize_path('normal_file.txt').split('/')[-1]\n"
+            "try:\n    sanitize_path('../etc/passwd')\n    assert False\nexcept ValueError:\n    pass"
+        ),
+    },
+    "Custom Engineering Specification": {
+        "domain": "Custom Spec",
+        "prompt": "",
+        "tests": "",
+    },
+}
 
-        st.code(res.final_code, language=res.target_language)
-
-    # ══════════ TAB 4: QUALITY & SECURITY ════════════════════════
-    with t4:
-        st.markdown("### 📊 Code Quality & Security Analysis")
-        is_valid, syn_err, meta = check_syntax(res.final_code, res.target_language)
-
-        # Top metrics
-        qm1, qm2, qm3, qm4, qm5 = st.columns(5)
-        with qm1: st.metric("Syntax Valid",        "✅ Yes" if is_valid else "❌ No")
-        with qm2: st.metric("Security Score",       f"{meta.get('security_score',100)}/100")
-        with qm3: st.metric("Complexity",           meta.get("cyclomatic_complexity",1))
-        with qm4: st.metric("Functions",            meta.get("num_functions",0))
-        with qm5: st.metric("Docstrings",           meta.get("docstring_count",0))
-
-        st.write("")
-
-        # Security findings
-        if meta.get("security_flags"):
-            st.warning("⚠️ **Security Findings:**", icon="🔴")
-            for f_ in meta["security_flags"]:
-                st.markdown(f"- 🔴 `{f_}`")
-        else:
-            st.success("🛡️ **Security Clean** — No dangerous functions (eval, exec, shell injection) detected.", icon="✅")
-
-        if not is_valid and syn_err:
-            st.error(f"❌ Syntax Error: `{syn_err}`")
-
-        # Bug breakdown
-        if all_bugs:
-            st.markdown("#### Bug Distribution")
-            ba1, ba2 = st.columns(2)
-            with ba1:
-                st.markdown("**By Severity**")
-                sev_ct: dict = {}
-                for b in all_bugs:
-                    k = str(b.severity)
-                    sev_ct[k] = sev_ct.get(k,0)+1
-                colors = {"CRITICAL":"#EF4444","MAJOR":"#F59E0B","MINOR":"#3B82F6","SUGGESTION":"#8B5CF6"}
-                for sev, cnt in sorted(sev_ct.items(), key=lambda x:-x[1]):
-                    c = colors.get(sev.upper(),"#94A3B8")
-                    st.markdown(
-                        f'<span style="color:{c};font-weight:700;">{sev}</span> — {cnt} bug(s)',
-                        unsafe_allow_html=True
-                    )
-            with ba2:
-                st.markdown("**By Category**")
-                cat_ct: dict = {}
-                for b in all_bugs:
-                    k = str(b.category)
-                    cat_ct[k] = cat_ct.get(k,0)+1
-                for cat, cnt in sorted(cat_ct.items(), key=lambda x:-x[1]):
-                    st.markdown(f'`{cat}` — {cnt}')
-
-        with st.expander("📋 Full AST Metadata"):
-            st.json(meta)
-
-    # ══════════ TAB 5: SANDBOX LOG ════════════════════════════════
-    with t5:
-        st.markdown("### 🧪 Sandbox Subprocess Execution Log")
-        if res.final_execution:
-            fe = res.final_execution
-            if fe.success:
-                st.success(f"✅ Execution passed in **{fe.execution_time_ms:.1f}ms** (Exit Code: {fe.exit_code})", icon="⚡")
-            else:
-                st.error(f"❌ Execution failed (Exit Code: {fe.exit_code})", icon="❌")
-
-            sl1, sl2 = st.columns(2)
-            with sl1:
-                st.markdown("**📤 stdout**")
-                st.code(fe.stdout.strip() or "(no output)", language="text")
-            with sl2:
-                st.markdown("**⚠️ stderr**")
-                st.code(fe.stderr.strip() or "(no errors)", language="text")
-
-            if fe.syntax_error:
-                st.error(f"Syntax Error: `{fe.syntax_error}`")
-
-            # Per-round table
-            if len(res.iterations) > 1:
-                st.markdown("#### Per-Round Execution Summary")
-                for step in res.iterations:
-                    if step.execution:
-                        col_r = "#10B981" if step.execution.success else "#EF4444"
-                        ico   = "✅" if step.execution.success else "❌"
-                        st.markdown(
-                            f'<span style="color:{col_r};">{ico} **Round {step.round_idx}** — '
-                            f'{step.execution.execution_time_ms:.1f}ms · Exit `{step.execution.exit_code}`</span>',
-                            unsafe_allow_html=True
-                        )
-        else:
-            st.info("Sandbox execution was disabled in sidebar settings.", icon="ℹ️")
-
-    # ══════════ TAB 6: AUDIT REPORT ═══════════════════════════════
-    with t6:
-        st.markdown("### 📄 Multi-LLM Audit Report")
-        report_md = export_markdown_report(res)
-        st.markdown(report_md)
-
-    # ══════════ TAB 7: EXPORT ════════════════════════════════════
-    with t7:
-        st.markdown("### 📥 Export Workflow Results")
-        st.write("")
-        e1, e2, e3, e4 = st.columns(4)
-        with e1:
-            st.download_button(
-                "⬇️ Python Script (.py)",
-                data=res.final_code,
-                file_name=f"solution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py",
-                mime="text/x-python",
-                use_container_width=True,
-            )
-        with e2:
-            st.download_button(
-                "⬇️ Audit Report (.md)",
-                data=export_markdown_report(res),
-                file_name=f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
-        with e3:
-            json_data = json.dumps(res.model_dump(mode="json"), indent=2, default=str)
-            st.download_button(
-                "⬇️ Full Workflow (.json)",
-                data=json_data,
-                file_name=f"workflow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-        with e4:
-            # Generate diff as patch file
-            if len(res.iterations) > 1:
-                diff_patch = compute_unified_diff(
-                    res.iterations[0].code, res.final_code, "original", "fixed"
-                )
-                st.download_button(
-                    "⬇️ Code Diff (.patch)",
-                    data=diff_patch,
-                    file_name=f"changes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.patch",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            else:
-                st.button("⬇️ Code Diff (.patch)", disabled=True, use_container_width=True)
-
-        st.write("")
-        st.markdown("#### 📋 Workflow Summary")
-        st.markdown(f"""
-| Field | Value |
-|:---|:---|
-| **Status** | `{res.status}` |
-| **Provider** | `{res.provider}` |
-| **Generator** | `{res.generator_model}` |
-| **Reviewer** | `{res.reviewer_model}` |
-| **Validator** | `{res.validator_model or 'disabled'}` |
-| **Rounds** | `{res.rounds_count}` |
-| **Bugs Detected** | `{res.total_bugs_detected}` |
-| **Bugs Fixed** | `{res.total_bugs_fixed}` |
-| **Final Language** | `{res.target_language}` |
-| **Sandbox Runtime** | `{res.final_execution.execution_time_ms:.1f} ms` if {bool(res.final_execution)} else `N/A` |
-""")
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  EMPTY STATE
-# ─────────────────────────────────────────────────────────────────────
-elif not run_btn:
-    logo_es = f'<img src="{LOGO_SRC}" style="width:56px;height:56px;margin-bottom:.7rem;opacity:.5;"/>' if LOGO_SRC else '<div style="font-size:3rem;margin-bottom:.7rem;">🛡️</div>'
+# ─────────────────────────────────────────────────────────────────────────────
+#  7. SIDEBAR NAVIGATION COMPONENT
+# ─────────────────────────────────────────────────────────────────────────────
+with st.sidebar:
+    # ── Brand Identity Header ──
+    logo_icon_html = f'<img src="{LOGO_ICON_SRC}" class="sb-brand-logo"/>' if LOGO_ICON_SRC else '🛡️'
     st.markdown(f"""
-    <div class="empty-state">
-        {logo_es}
-        <div class="empty-state-title">Ready to Review</div>
-        <div class="empty-state-sub">
-            Select a real-world scenario from the dropdown above (or write a custom prompt),
-            configure your LLM agents in the sidebar, then click
-            <strong>🚀 Start Multi-LLM Review Workflow</strong> to begin.<br/><br/>
-            <strong>No GPU needed</strong> — select <em>⚡ Smart Simulator</em> to demo instantly.
+    <div class="sb-brand-box">
+        {logo_icon_html}
+        <div>
+            <div class="sb-brand-title">Open<span>Review</span> AI</div>
+            <div class="sb-brand-tagline">Code Better with AI Together</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Navigation Items ──
+    st.markdown('<div class="sb-nav-label">Main Navigation</div>', unsafe_allow_html=True)
+
+    nav_items = [
+        ("Dashboard", "📊 Dashboard"),
+        ("New Code Task", "➕ New Code Task"),
+        ("Live Workflow", "⚡ Live Workflow"),
+        ("Code Comparison", "🔍 Code Comparison"),
+        ("Review Results", "🛡️ Review Results"),
+        ("Testing Results", "🧪 Testing Results"),
+        ("History & Reports", "📜 History & Reports"),
+        ("Settings", "⚙️ Settings"),
+    ]
+
+    for key, label in nav_items:
+        is_active = (st.session_state.active_page == key)
+        btn_type = "primary" if is_active else "secondary"
+        if st.button(label, key=f"nav_{key}", use_container_width=True, type=btn_type):
+            st.session_state.active_page = key
+            st.rerun()
+
+    st.markdown('<div style="margin-top:1.5rem;"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sb-nav-label">System Telemetry</div>', unsafe_allow_html=True)
+
+    # ── Real Model Status Pill ──
+    if ollama_online and ollama_models:
+        st.markdown(
+            f'<div class="pro-pill pill-online" style="width:100%;justify-content:center;margin-bottom:0.4rem;">'
+            f'🟢 Ollama Online ({len(ollama_models)} models)</div>',
+            unsafe_allow_html=True,
+        )
+    elif st.session_state.provider_choice == "mock":
+        st.markdown(
+            '<div class="pro-pill pill-simulator" style="width:100%;justify-content:center;margin-bottom:0.4rem;">'
+            '⚡ Smart Simulator Active</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="pro-pill pill-warning" style="width:100%;justify-content:center;margin-bottom:0.4rem;">'
+            '⚠️ Ollama Offline (Port 11434)</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Compact Metadata ──
+    st.markdown(f"""
+    <div style="font-size:0.72rem;color:var(--text-muted);padding:0.4rem 0.5rem;line-height:1.6;border-top:1px solid var(--border-subtle);margin-top:0.6rem;">
+        <div><strong>Generator:</strong> <code>{st.session_state.gen_model_setting}</code></div>
+        <div><strong>Reviewer:</strong> <code>{st.session_state.rev_model_setting}</code></div>
+        <div style="margin-top:0.35rem;color:var(--text-subtle);">v2.1.0 · Aman Varma</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  8. TOP GLOBAL HEADER COMPONENT
+# ─────────────────────────────────────────────────────────────────────────────
+def render_header(title_suffix: str = ""):
+    """Renders top header with logo, title, connection status, and theme toggle."""
+    logo_hdr = f'<img src="{LOGO_ICON_SRC}" class="app-header-logo"/>' if LOGO_ICON_SRC else '🛡️'
+    
+    col_l, col_r = st.columns([3, 1.2])
+    with col_l:
+        st.markdown(f"""
+        <div class="app-title-block">
+            {logo_hdr}
+            <div>
+                <h1 class="app-title">OpenReview AI {f'— {title_suffix}' if title_suffix else ''}</h1>
+                <div class="app-subtitle">Multi-LLM Autonomous Code Generation, Review &amp; Self-Correction System</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_r:
+        hcol1, hcol2 = st.columns([1.1, 1])
+        with hcol1:
+            if ollama_online:
+                st.markdown('<div class="pro-pill pill-online">🟢 Ollama Live</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="pro-pill pill-simulator">⚡ Simulator</div>', unsafe_allow_html=True)
+        with hcol2:
+            theme_btn_label = "🌙 Dark" if st.session_state.theme_mode == "light" else "☀️ Light"
+            if st.button(theme_btn_label, key="theme_toggle_btn", use_container_width=True):
+                st.session_state.theme_mode = "dark" if st.session_state.theme_mode == "light" else "light"
+                st.rerun()
+
+    st.markdown('<div style="margin-bottom: 1.2rem;"></div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  9. PAGE 1: DASHBOARD
+# ─────────────────────────────────────────────────────────────────────────────
+def render_dashboard():
+    render_header("System Overview")
+
+    # ── Authentic Metrics from HistoryStore ──
+    stats = history_store.get_summary_stats()
+    runs = history_store.list_runs()
+
+    # ── Top 4 System Status Cards (Real data, never hardcoded) ──
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st_color = "var(--success)" if ollama_online else "var(--warning)"
+        st_text = "Online" if ollama_online else "Offline"
+        st_sub = f"{len(ollama_models)} models detected" if ollama_online else "Using Smart Simulator"
+        st.markdown(f"""
+        <div class="stat-card">
+            <div>
+                <div class="stat-label">Ollama Engine</div>
+                <div class="stat-value" style="color:{st_color};">{st_text}</div>
+            </div>
+            <div class="stat-sub">{st_sub}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div>
+                <div class="stat-label">Code Generator</div>
+                <div class="stat-value" style="font-size:1.15rem;padding-top:0.25rem;">{st.session_state.gen_model_setting}</div>
+            </div>
+            <div class="stat-sub">LLM 1 Author &amp; Fixer Agent</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div>
+                <div class="stat-label">Code Reviewer</div>
+                <div class="stat-value" style="font-size:1.15rem;padding-top:0.25rem;">{st.session_state.rev_model_setting}</div>
+            </div>
+            <div class="stat-sub">LLM 2 Static &amp; Logic Auditor</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c4:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div>
+                <div class="stat-label">Total Workflow Runs</div>
+                <div class="stat-value">{stats['total_runs']}</div>
+            </div>
+            <div class="stat-sub">{stats['passed_runs']} passed ({stats['pass_rate_pct']}%)</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div style="margin-top:1.2rem;"></div>', unsafe_allow_html=True)
+
+    # ── Quick Action Callout ──
+    q1, q2 = st.columns([3, 1])
+    with q1:
+        st.markdown("""
+        <div class="pro-card" style="margin-bottom:0;border-left: 4px solid var(--primary);">
+            <div style="font-weight:700;font-size:1rem;color:var(--text-primary);margin-bottom:0.25rem;">
+                🚀 Autonomous Multi-Agent Code Review
+            </div>
+            <div style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5;">
+                OpenReview AI orchestrates specialized open-source models to generate, statically inspect, 
+                execute in isolated sandboxes, and iteratively correct code until full consensus is reached.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with q2:
+        st.markdown('<div style="margin-top:0.4rem;"></div>', unsafe_allow_html=True)
+        if st.button("➕ Launch New Code Task", type="primary", use_container_width=True):
+            st.session_state.active_page = "New Code Task"
+            st.rerun()
+
+    st.markdown('<div style="margin-top:1.4rem;"></div>', unsafe_allow_html=True)
+
+    # ── Statistics Grid ──
+    st.markdown("### 📊 Workflow Execution Telemetry")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1: st.metric("Total Executions", stats["total_runs"])
+    with m2: st.metric("Passed / Approved", stats["passed_runs"])
+    with m3: st.metric("Changes / Retried", stats["failed_runs"])
+    with m4: st.metric("Pass Rate", f"{stats['pass_rate_pct']}%")
+    with m5: st.metric("Avg Attempts", stats["avg_attempts"])
+
+    st.markdown('<div style="margin-top:1.4rem;"></div>', unsafe_allow_html=True)
+
+    # ── Recent Runs Table (Real data from HistoryStore) ──
+    st.markdown("### 🕒 Recent Workflow Executions")
+    if runs:
+        for r in runs[:6]:
+            with st.container():
+                rc1, rc2, rc3, rc4, rc5 = st.columns([3, 1.2, 1, 1, 1])
+                with rc1:
+                    st.markdown(f"**{r['task']}**")
+                    st.caption(f"ID: `{r['run_id']}` · {r['timestamp'][:19] if r['timestamp'] else ''}")
+                with rc2:
+                    st_val = r["status"]
+                    pill_cls = "pill-online" if st_val == "PASSED" else ("pill-warning" if "RETRY" in st_val else "pill-danger")
+                    st.markdown(f'<div class="pro-pill {pill_cls}">{st_val}</div>', unsafe_allow_html=True)
+                with rc3:
+                    st.markdown(f"**{r['attempts']}** / {r['max_attempts']} attempts")
+                with rc4:
+                    st.markdown(f"{r['duration']}s")
+                with rc5:
+                    if st.button("Inspect", key=f"view_dash_{r['run_id']}", use_container_width=True):
+                        if load_run_to_active_state(r["run_id"]):
+                            st.session_state.active_page = "Review Results"
+                            st.rerun()
+                st.markdown("<hr style='margin:0.4rem 0;'/>", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">📂</div>
+            <div class="empty-title">No Historical Runs Recorded Yet</div>
+            <div class="empty-sub">Submit your first coding prompt in <strong>New Code Task</strong> to initiate autonomous multi-agent review.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<div style="margin-top:1.4rem;"></div>', unsafe_allow_html=True)
+
+    # ── Architecture & Security Boundaries ──
+    with st.expander("🏛️ System Architecture, Guardrails & Safe Execution"):
+        st.markdown("""
+        - **Multi-Agent Paradigm:** Overcomes single-LLM confirmation bias by separating the Author (LLM 1) from the Critic (LLM 2) and Security Arbiter (LLM 3).
+        - **Deterministic Verification Layer:** Before presenting code to LLM 2, code is analyzed via Python AST (`ast.parse`) for syntax errors, CWE-95, and unsafe imports.
+        - **Sandboxed Execution:** Executes in an isolated subprocess with explicit timeout guards (5–15s). Arbitrary shell commands are strictly blocked.
+        - **Finite Stopping Condition:** Max retry limits (1–5) strictly prevent infinite self-correction loops.
+        - **100% Open-Source & Local-First:** Designed for sequential CPU/GPU inference via Ollama or instant offline Smart Simulator.
+        """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  10. PAGE 2: NEW CODE TASK
+# ─────────────────────────────────────────────────────────────────────────────
+def render_new_code_task():
+    render_header("New Code Task")
+
+    col_l, col_r = st.columns([2.5, 1])
+
+    with col_l:
+        st.markdown("#### 1. Task Definition")
+        selected_scenario_name = st.selectbox(
+            "Select Engineering Scenario Preset",
+            list(SCENARIO_PRESETS.keys()),
+            index=0,
+            help="Choose from pre-built scenarios across real engineering domains",
+        )
+        preset = SCENARIO_PRESETS[selected_scenario_name]
+
+        wf_input_mode = st.radio(
+            "Input Mode",
+            ["💡 Generate from Specification", "📂 Review & Auto-Fix Existing Code"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+        task_prompt = ""
+        existing_code = None
+
+        if "Generate" in wf_input_mode:
+            task_prompt = st.text_area(
+                "Task Specification & Requirements",
+                value=preset["prompt"],
+                height=130,
+                placeholder="Describe the function, class, or module requirements...",
+                help="Specify inputs, return types, edge cases, and performance criteria.",
+            )
+            with st.expander("🧪 Automated Test Assertions (Optional — executed in sandbox)", expanded=bool(preset["tests"])):
+                custom_tests = st.text_area(
+                    "Assertions / Pytest code",
+                    value=preset["tests"],
+                    height=90,
+                    label_visibility="collapsed",
+                    placeholder="assert my_func(input) == expected_output",
+                )
+        else:
+            st.info("Upload or paste any Python script to audit for bugs, security vulnerabilities, and logic flaws.")
+            up_file = st.file_uploader("Upload .py file", type=["py"])
+            default_pasted = (
+                "# Code with multiple vulnerabilities\n"
+                "def evaluate_query(raw_expr):\n"
+                "    return eval(raw_expr)  # CWE-95 Vulnerability\n\n"
+                "def read_file(name):\n"
+                "    return open('/data/' + name).read()  # Path traversal\n\n"
+                "def divide(a, b):\n"
+                "    return a / b  # Missing ZeroDivision check\n"
+            )
+            existing_code = st.text_area(
+                "Paste Python code",
+                value=up_file.getvalue().decode("utf-8") if up_file else default_pasted,
+                height=180,
+            )
+            task_prompt = (
+                "Audit this code for security vulnerabilities (CWE-95, path traversal), "
+                "edge case bugs (ZeroDivisionError, None inputs), add type annotations, and fix all defects."
+            )
+            custom_tests = ""
+
+    with col_r:
+        st.markdown("#### 2. Workflow Parameters")
+        
+        # Provider selection
+        prov_options = ["mock", "ollama"]
+        prov_choice = st.selectbox(
+            "Execution Engine",
+            prov_options,
+            index=0 if st.session_state.provider_choice == "mock" else 1,
+            format_func=lambda x: "⚡ Smart Simulator (Instant, No GPU)" if x == "mock" else "🦙 Ollama (Local Models)",
+        )
+        st.session_state.provider_choice = prov_choice
+
+        if prov_choice == "ollama" and not ollama_online:
+            st.warning("⚠️ Local Ollama server is offline. Falling back to Smart Simulator recommended.")
+
+        # Models
+        available_models = ollama_models if (ollama_online and ollama_models) else [
+            "qwen2.5:0.5b", "qwen2.5-coder:1.5b", "deepseek-coder:1.3b", "gemma2:2b", "mistral:latest"
+        ]
+        
+        gen_m = st.selectbox("LLM 1 (Generator)", available_models, index=0)
+        rev_m = st.selectbox("LLM 2 (Reviewer)", available_models, index=min(1, len(available_models)-1))
+        
+        # Guardrails
+        max_retries = st.slider("Max Review Iterations", 1, 5, st.session_state.max_retries_setting)
+        enable_sandbox = st.checkbox("Subprocess Sandbox Execution", value=st.session_state.sandbox_enabled)
+        enable_syntax = st.checkbox("AST Syntax Analysis", value=st.session_state.ast_syntax_enabled)
+
+    st.markdown('<div style="margin-top:1.2rem;"></div>', unsafe_allow_html=True)
+
+    # ── Action Buttons ──
+    bcol1, bcol2 = st.columns([4, 1])
+    with bcol1:
+        run_submitted = st.button("🚀 Start Multi-LLM Review Workflow", type="primary", use_container_width=True)
+    with bcol2:
+        if st.button("🔄 Clear Inputs", use_container_width=True):
+            st.session_state.workflow_result = None
+            st.rerun()
+
+    # ── Workflow Execution ──
+    if run_submitted:
+        if not task_prompt.strip() and not existing_code:
+            st.error("⚠️ Please specify a task description or paste code to review.")
+            return
+
+        config = WorkflowConfig(
+            provider_type=prov_choice,
+            generator_model=gen_m,
+            reviewer_model=rev_m,
+            validator_model=st.session_state.val_model_setting,
+            max_retries=max_retries,
+            enable_sandbox_execution=enable_sandbox,
+            enable_third_llm_validator=True,
+            temperature=st.session_state.temperature_setting,
+        )
+
+        progress_ph = st.empty()
+        status_ph = st.empty()
+
+        events_map = {
+            "workflow_started": (10, "Initialising multi-agent review network..."),
+            "generation_started": (25, f"LLM 1 ({gen_m}) generating code candidate..."),
+            "generation_completed": (45, "Code written — validating AST syntax..."),
+            "execution_started": (55, "Executing code in isolated subprocess sandbox..."),
+            "execution_completed": (65, "Sandbox execution complete — passing to reviewer..."),
+            "review_started": (75, f"LLM 2 ({rev_m}) performing static audit..."),
+            "review_completed": (85, "Review complete — assessing security consensus..."),
+            "fix_started": (90, "Defects identified — LLM 1 applying targeted fixes..."),
+            "round_approved": (98, "Consensus reached — code approved!"),
+            "max_retries_reached": (98, "Max retry limit reached — compiling best version."),
+            "workflow_completed": (100, "Workflow successfully finalized!"),
+        }
+
+        def on_event_callback(evt_name: str, evt_data: dict):
+            if evt_name in events_map:
+                pct, msg = events_map[evt_name]
+                progress_ph.progress(pct, text=msg)
+
+        try:
+            with st.spinner("Multi-agent team analyzing and verifying code..."):
+                t_start = time.time()
+                orchestrator = WorkflowOrchestrator(config=config)
+                result = orchestrator.run(
+                    task_prompt=task_prompt,
+                    target_language="python",
+                    unit_tests=custom_tests.strip() or None,
+                    existing_code=existing_code,
+                    on_event=on_event_callback,
+                )
+                elapsed = time.time() - t_start
+
+            progress_ph.empty()
+            status_ph.empty()
+
+            st.session_state.workflow_result = result
+            run_id = save_result_to_history(result, elapsed)
+
+            st.toast(f"✅ Workflow completed in {elapsed:.1f}s! Run saved as {run_id}", icon="🏆")
+            st.success(f"🎉 **Workflow Completed!** Status: `{result.status}` in {result.rounds_count} round(s).")
+            
+            nav_c1, nav_c2 = st.columns(2)
+            with nav_c1:
+                if st.button("👉 View Review Verdict & Findings", use_container_width=True, type="primary"):
+                    st.session_state.active_page = "Review Results"
+                    st.rerun()
+            with nav_c2:
+                if st.button("👉 View Live Workflow Stepper", use_container_width=True):
+                    st.session_state.active_page = "Live Workflow"
+                    st.rerun()
+
+        except Exception as e:
+            progress_ph.empty()
+            status_ph.empty()
+            st.error(f"❌ Execution Error: {str(e)}")
+            with st.expander("Technical Traceback"):
+                st.code(traceback.format_exc(), language="python")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  11. PAGE 3: LIVE WORKFLOW
+# ─────────────────────────────────────────────────────────────────────────────
+def render_live_workflow():
+    render_header("Live Workflow")
+
+    res: Optional[WorkflowResult] = st.session_state.workflow_result
+    if not res:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">⚡</div>
+            <div class="empty-title">No Active Workflow in Memory</div>
+            <div class="empty-sub">Submit a task in <strong>New Code Task</strong> or select an execution from <strong>History &amp; Reports</strong> to inspect the live multi-agent workflow.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("➕ Go to New Code Task", type="primary"):
+            st.session_state.active_page = "New Code Task"
+            st.rerun()
+        return
+
+    # ── Interactive Stepper ──
+    st_approved = (res.status == "APPROVED")
+    st.markdown(f"""
+    <div class="flow-stepper">
+        <div class="flow-step-node">
+            <div class="flow-step-icon done">📝</div>
+            <div class="flow-step-name">Task Spec</div>
+            <div class="flow-step-sub">User Input</div>
+        </div>
+        <div class="flow-step-arrow">→</div>
+        <div class="flow-step-node">
+            <div class="flow-step-icon done">👨‍💻</div>
+            <div class="flow-step-name">LLM 1 Author</div>
+            <div class="flow-step-sub">{res.generator_model}</div>
+        </div>
+        <div class="flow-step-arrow">→</div>
+        <div class="flow-step-node">
+            <div class="flow-step-icon done">⚡</div>
+            <div class="flow-step-name">Sandbox Run</div>
+            <div class="flow-step-sub">AST &amp; Subprocess</div>
+        </div>
+        <div class="flow-step-arrow">→</div>
+        <div class="flow-step-node">
+            <div class="flow-step-icon done">🧐</div>
+            <div class="flow-step-name">LLM 2 Reviewer</div>
+            <div class="flow-step-sub">{res.reviewer_model}</div>
+        </div>
+        <div class="flow-step-arrow">→</div>
+        <div class="flow-step-node">
+            <div class="flow-step-icon done">🛡️</div>
+            <div class="flow-step-name">LLM 3 Validator</div>
+            <div class="flow-step-sub">Security Audit</div>
+        </div>
+        <div class="flow-step-arrow">→</div>
+        <div class="flow-step-node">
+            <div class="flow-step-icon {'done' if st_approved else 'active'}">{'🏆' if st_approved else '⚠️'}</div>
+            <div class="flow-step-name">{'Approved' if st_approved else 'Limit Reached'}</div>
+            <div class="flow-step-sub">{res.rounds_count} Rounds</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Top Metrics Bar ──
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.metric("Overall Verdict", res.status)
+    with m2: st.metric("Review Iterations", res.rounds_count)
+    with m3: st.metric("Bugs Flagged", res.total_bugs_detected)
+    with m4: st.metric("Bugs Auto-Fixed", res.total_bugs_fixed)
+
+    st.markdown('<div style="margin-top:1.2rem;"></div>', unsafe_allow_html=True)
+
+    # ── Multi-Agent Communication Transcript ──
+    st.markdown("### 💬 Multi-Agent Conversation Transcript")
+    st.caption(f"{len(res.iterations)} review cycle(s) · {len(res.messages)} agent messages")
+
+    for it in res.iterations:
+        is_latest = (it.round_idx == len(res.iterations) - 1)
+        r_bugs = [b for r in it.reviews for b in r.bugs]
+        with st.expander(f"📍 Iteration {it.round_idx + 1} — Verdict: {it.status} ({len(r_bugs)} issues found)", expanded=is_latest):
+            # Agent messages for this round
+            step_msgs = [m for m in res.messages if m.round_idx == it.round_idx]
+            for m in step_msgs:
+                st.markdown(f"**{m.sender_role}** (`{m.sender_model}`) · *{m.timestamp}*")
+                st.info(m.content)
+
+            # Code produced this round
+            st.markdown("**Code Snapshot:**")
+            st.code(it.code, language="python")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  12. PAGE 4: CODE COMPARISON
+# ─────────────────────────────────────────────────────────────────────────────
+def render_code_comparison():
+    render_header("Code Comparison & Diff")
+
+    res: Optional[WorkflowResult] = st.session_state.workflow_result
+    if not res:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">🔍</div>
+            <div class="empty-title">No Code Available for Comparison</div>
+            <div class="empty-sub">Execute a task with multiple iterations to compare code revisions.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    if len(res.iterations) <= 1:
+        st.success("✅ **First-Pass Approval:** The code passed all reviews on Round 1 without requiring iterative modifications.")
+        st.markdown("#### Final Approved Code")
+        st.code(res.final_code, language="python")
+        return
+
+    # Iteration selection
+    r_options = list(range(len(res.iterations)))
+    c1, c2 = st.columns(2)
+    with c1:
+        idx_a = st.selectbox("Baseline Version", r_options, index=0, format_func=lambda x: f"Iteration {x+1}")
+    with c2:
+        idx_b = st.selectbox("Revised Version", r_options, index=len(r_options)-1, format_func=lambda x: f"Iteration {x+1} (Latest)")
+
+    code_a = res.iterations[idx_a].code
+    code_b = res.iterations[idx_b].code
+
+    diff_text = compute_unified_diff(code_a, code_b, f"Iteration {idx_a+1}", f"Iteration {idx_b+1}")
+    added = sum(1 for line in diff_text.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff_text.splitlines() if line.startswith("-") and not line.startswith("---"))
+
+    st.markdown(f"""
+    <div style="display:flex;gap:1rem;margin-bottom:0.8rem;align-items:center;">
+        <span class="pro-pill pill-online">+{added} lines added</span>
+        <span class="pro-pill pill-danger">−{removed} lines removed</span>
+        <span style="font-size:0.82rem;color:var(--text-muted);">Comparing Iteration {idx_a+1} ➔ Iteration {idx_b+1}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tab_diff, tab_side = st.tabs(["Unified Diff", "Side-by-Side View"])
+    with tab_diff:
+        st.code(diff_text or "# No textual differences detected", language="diff")
+    with tab_side:
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.markdown(f"**Iteration {idx_a+1}**")
+            st.code(code_a, language="python")
+        with col_right:
+            st.markdown(f"**Iteration {idx_b+1}**")
+            st.code(code_b, language="python")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  13. PAGE 5: REVIEW RESULTS
+# ─────────────────────────────────────────────────────────────────────────────
+def render_review_results():
+    render_header("Review Results & Findings")
+
+    res: Optional[WorkflowResult] = st.session_state.workflow_result
+    if not res:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">🛡️</div>
+            <div class="empty-title">No Review Results Available</div>
+            <div class="empty-sub">Execute a review task or load a saved report from history.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ── Verdict Header ──
+    is_appr = (res.status == "APPROVED")
+    v_cls = "pill-online" if is_appr else "pill-warning"
+    v_ico = "✅" if is_appr else "⚠️"
+    
+    st.markdown(f"""
+    <div class="pro-card" style="border-left: 4px solid {'var(--success)' if is_appr else 'var(--warning)'};">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <span class="pro-pill {v_cls}">{v_ico} {res.status}</span>
+                <span style="font-size:1.1rem;font-weight:800;margin-left:0.6rem;color:var(--text-primary);">
+                    {'Code Passed All Checks' if is_appr else 'Review Flagged Outstanding Issues'}
+                </span>
+            </div>
+            <div style="font-size:0.82rem;color:var(--text-muted);">
+                {res.rounds_count} Round(s) · {res.total_bugs_detected} Bugs Detected · {res.total_bugs_fixed} Fixed
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Detailed Findings per Round ──
+    st.markdown("### 🐛 Detailed Defect Audit Trail")
+    all_bugs = [b for step in res.iterations for r in step.reviews for b in r.bugs]
+
+    if all_bugs:
+        for idx, b in enumerate(all_bugs):
+            sev_str = b.severity.value.lower() if hasattr(b.severity, "value") else str(b.severity).lower()
+            st.markdown(f"""
+            <div class="bug-card {sev_str}">
+                <div class="bug-header">
+                    <span class="pro-pill pill-{'danger' if sev_str=='critical' else ('warning' if sev_str=='major' else 'simulator')}">
+                        {b.severity}
+                    </span>
+                    <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);">[{b.category}]</span>
+                    {f"<span style='font-size:0.75rem;color:var(--text-muted);'>Line {b.line_number}</span>" if b.line_number else ""}
+                </div>
+                <div class="bug-desc">{b.description}</div>
+                <div class="bug-fix-box">💡 <strong>Suggested Fix:</strong> {b.suggested_fix}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.success("✅ **Zero Defects Detected:** No security vulnerabilities, edge-case regressions, or syntax defects found.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  14. PAGE 6: TESTING RESULTS
+# ─────────────────────────────────────────────────────────────────────────────
+def render_testing_results():
+    render_header("Testing & Verification")
+
+    res: Optional[WorkflowResult] = st.session_state.workflow_result
+    if not res:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">🧪</div>
+            <div class="empty-title">No Execution Results Available</div>
+            <div class="empty-sub">Execute a code review workflow to inspect sandbox execution logs and AST syntax verification.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ── AST Syntax Check ──
+    is_valid, syn_err, meta = check_syntax(res.final_code, "python")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 1. AST Static & Syntax Verification")
+        syn_badge = "pill-online" if is_valid else "pill-danger"
+        st.markdown(f'<div class="pro-pill {syn_badge}">{"✅ Syntax Valid" if is_valid else "❌ Syntax Error"}</div>', unsafe_allow_html=True)
+        
+        m_a, m_b, m_c = st.columns(3)
+        with m_a: st.metric("Functions", meta.get("num_functions", 0))
+        with m_b: st.metric("Docstrings", meta.get("docstring_count", 0))
+        with m_c: st.metric("Complexity", meta.get("cyclomatic_complexity", 1))
+
+        if meta.get("security_flags"):
+            for sflag in meta["security_flags"]:
+                st.warning(f"Security Alert: `{sflag}`")
+
+    with col2:
+        st.markdown("#### 2. Subprocess Sandbox Execution")
+        if res.final_execution:
+            fe = res.final_execution
+            ex_badge = "pill-online" if fe.success else "pill-danger"
+            st.markdown(f'<div class="pro-pill {ex_badge}">{"✅ Subprocess Exit 0" if fe.success else "❌ Subprocess Failed"}</div>', unsafe_allow_html=True)
+            st.metric("Execution Runtime", f"{fe.execution_time_ms:.1f} ms")
+
+            st.markdown("**Standard Output (stdout):**")
+            st.code(fe.stdout.strip() or "(no stdout generated)", language="text")
+            if fe.stderr.strip():
+                st.markdown("**Standard Error (stderr):**")
+                st.code(fe.stderr.strip(), language="text")
+        else:
+            st.info("Sandbox subprocess execution was bypassed in configuration.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  15. PAGE 7: HISTORY & REPORTS
+# ─────────────────────────────────────────────────────────────────────────────
+def render_history_and_reports():
+    render_header("History & Reports")
+
+    runs = history_store.list_runs()
+    
+    # ── Filter Bar ──
+    f1, f2 = st.columns([1.5, 3])
+    with f1:
+        status_filter = st.selectbox("Filter Status", ["ALL", "PASSED", "RETRY_LIMIT_REACHED", "FAILED"])
+    with f2:
+        search_kw = st.text_input("Search Prompts", placeholder="Type keyword...")
+
+    filtered_runs = runs
+    if status_filter != "ALL":
+        filtered_runs = [r for r in filtered_runs if r["status"] == status_filter]
+    if search_kw.strip():
+        kw = search_kw.strip().lower()
+        filtered_runs = [r for r in filtered_runs if kw in r["task"].lower() or kw in r["run_id"].lower()]
+
+    st.markdown(f"Showing **{len(filtered_runs)}** run(s):")
+
+    if filtered_runs:
+        for r in filtered_runs:
+            with st.container():
+                col_info, col_actions = st.columns([3.5, 2.5])
+                with col_info:
+                    st_val = r["status"]
+                    pill_cls = "pill-online" if st_val == "PASSED" else ("pill-warning" if "RETRY" in st_val else "pill-danger")
+                    st.markdown(f"""
+                    <div>
+                        <span class="pro-pill {pill_cls}">{st_val}</span>
+                        <strong style="margin-left:0.5rem;font-size:0.92rem;">{r['task']}</strong>
+                    </div>
+                    <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">
+                        Run ID: <code>{r['run_id']}</code> · {r['timestamp'][:19] if r['timestamp'] else ''} · 
+                        {r['attempts']} attempts · {r['duration']}s
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col_actions:
+                    btn_c1, btn_c2, btn_c3 = st.columns(3)
+                    with btn_c1:
+                        if st.button("Inspect", key=f"hist_view_{r['run_id']}", use_container_width=True):
+                            if load_run_to_active_state(r["run_id"]):
+                                st.session_state.active_page = "Review Results"
+                                st.rerun()
+                    with btn_c2:
+                        rep = history_store.load_report(r["run_id"])
+                        if rep:
+                            st.download_button(
+                                "📥 JSON",
+                                data=rep.model_dump_json(indent=2),
+                                file_name=f"{r['run_id']}.json",
+                                mime="application/json",
+                                key=f"dl_json_{r['run_id']}",
+                                use_container_width=True,
+                            )
+                    with btn_c3:
+                        if rep and rep.final_code:
+                            st.download_button(
+                                "📥 Code",
+                                data=rep.final_code,
+                                file_name=f"{r['run_id']}.py",
+                                mime="text/x-python",
+                                key=f"dl_code_{r['run_id']}",
+                                use_container_width=True,
+                            )
+                st.markdown("<hr style='margin:0.4rem 0;'/>", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="empty-box">
+            <div class="empty-icon">📁</div>
+            <div class="empty-title">No Matching Runs Found</div>
+            <div class="empty-sub">Adjust your filter criteria or execute a new task.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Danger Zone ──
+    with st.expander("🗑️ Danger Zone: Clear History"):
+        st.warning("This will permanently remove saved execution JSONs and code files from disk.")
+        confirm_del = st.checkbox("I confirm I want to clear all execution records")
+        if st.button("Clear All Runs", disabled=not confirm_del, type="primary"):
+            del_ct = history_store.clear_all()
+            st.session_state.workflow_result = None
+            st.success(f"Cleared {del_ct} run record(s) from disk.")
+            st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  16. PAGE 8: SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+def render_settings():
+    render_header("Studio Settings")
+
+    st.markdown("#### 1. Ollama Server Configuration")
+    col_url, col_test = st.columns([3, 1])
+    with col_url:
+        ollama_url = st.text_input("Ollama Base URL", value=st.session_state.ollama_url_setting)
+    with col_test:
+        st.markdown('<div style="margin-top:1.8rem;"></div>', unsafe_allow_html=True)
+        if st.button("🔌 Test Connection", use_container_width=True):
+            ok, mdls, msg = probe_ollama_status(ollama_url)
+            if ok:
+                st.success(f"✅ Connected! Found {len(mdls)} installed models: {', '.join(mdls) if mdls else 'None'}")
+            else:
+                st.error(f"❌ Connection Failed: {msg}")
+
+    st.markdown("#### 2. Agent Model Assignments")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        gen_m = st.text_input("LLM 1 (Generator)", value=st.session_state.gen_model_setting)
+    with col_m2:
+        rev_m = st.text_input("LLM 2 (Reviewer)", value=st.session_state.rev_model_setting)
+    with col_m3:
+        val_m = st.text_input("LLM 3 (Validator)", value=st.session_state.val_model_setting)
+
+    st.markdown("#### 3. Workflow Guardrails")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        retries = st.slider("Max Review Iterations", 1, 5, value=st.session_state.max_retries_setting)
+        temp = st.slider("Temperature", 0.0, 0.8, value=st.session_state.temperature_setting, step=0.05)
+    with col_g2:
+        sb_enabled = st.checkbox("Subprocess Sandbox Execution", value=st.session_state.sandbox_enabled)
+        ast_enabled = st.checkbox("AST Syntax Verification", value=st.session_state.ast_syntax_enabled)
+
+    st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+
+    if st.button("💾 Save Settings", type="primary"):
+        st.session_state.ollama_url_setting = ollama_url.strip()
+        st.session_state.gen_model_setting = gen_m.strip()
+        st.session_state.rev_model_setting = rev_m.strip()
+        st.session_state.val_model_setting = val_m.strip()
+        st.session_state.max_retries_setting = retries
+        st.session_state.temperature_setting = temp
+        st.session_state.sandbox_enabled = sb_enabled
+        st.session_state.ast_syntax_enabled = ast_enabled
+        st.toast("✅ Settings saved successfully!", icon="💾")
+        st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  17. MAIN PAGE ROUTER
+# ─────────────────────────────────────────────────────────────────────────────
+PAGES = {
+    "Dashboard": render_dashboard,
+    "New Code Task": render_new_code_task,
+    "Live Workflow": render_live_workflow,
+    "Code Comparison": render_code_comparison,
+    "Review Results": render_review_results,
+    "Testing Results": render_testing_results,
+    "History & Reports": render_history_and_reports,
+    "Settings": render_settings,
+}
+
+current_page = st.session_state.active_page
+render_fn = PAGES.get(current_page, render_dashboard)
+render_fn()

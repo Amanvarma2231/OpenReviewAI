@@ -1,13 +1,18 @@
-# 🛡️ OpenReviewAI: Multi-LLM Code Review & Iterative Bug Correction Engine
+<p align="center">
+  <img src="assets/logo.svg" alt="OpenReview AI Logo" width="380"/>
+</p>
 
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Open Source AI](https://img.shields.io/badge/Open--Source%20Models-Gemma%20%7C%20Mistral%20%7C%20Bonsai%20%7C%20Qwen%20%7C%20DeepSeek-orange.svg)](#supported-models)
-[![Tests Passing](https://img.shields.io/badge/tests-19%20passed-brightgreen.svg)](#testing)
+<p align="center">
+  <strong>Multi-LLM Autonomous Code Generation, Review &amp; Self-Correction Studio</strong><br/>
+  <em>Code Better with AI Together</em>
+</p>
 
-An advanced multi-agent system where multiple open-source LLMs collaborate autonomously to write, review, test, and iteratively correct code until it is 100% bug-free and production-ready.
-
----
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"/></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"/></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/pytest-42%20passed-brightgreen.svg" alt="42 Tests Passing"/></a>
+  <img src="https://img.shields.io/badge/Theme-Light%20%7C%20Dark-blueviolet.svg" alt="Theme"/>
+</p>
 
 ## 🎯 Project Overview & Internship Specification
 
