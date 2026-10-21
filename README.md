@@ -12,6 +12,7 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"/></a>
   <a href="#testing"><img src="https://img.shields.io/badge/pytest-42%20passed-brightgreen.svg" alt="42 Tests Passing"/></a>
   <img src="https://img.shields.io/badge/Theme-Light%20%7C%20Dark-blueviolet.svg" alt="Theme"/>
+  <a href="https://render.com/deploy?repo=https://github.com/Amanvarma2231/OpenReviewAI"><img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render"/></a>
 </p>
 
 ## 🎯 Project Overview & Internship Specification
@@ -229,6 +230,42 @@ OpenReviewAI/
 ├── run_cli.bat                 # One-click Windows CLI launcher
 └── run_tests.bat               # One-click Windows test runner
 ```
+
+---
+
+## 🚀 Cloud Deployment on Render (Render.com)
+
+OpenReview AI includes a native [render.yaml](render.yaml) Blueprint for zero-friction cloud deployment.
+
+### Option 1: 1-Click Blueprint Deployment
+Click the button below to automatically provision OpenReview AI on Render:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Amanvarma2231/OpenReviewAI)
+
+### Option 2: Manual Web Service Setup
+1. Log in to your [Render Dashboard](https://dashboard.render.com/) and click **New +** → **Web Service**.
+2. Select **Build and deploy from a Git repository** and connect:
+   `https://github.com/Amanvarma2231/OpenReviewAI`
+3. Configure the settings:
+   - **Name:** `openreview-ai`
+   - **Region:** Any (e.g. `Oregon (US West)`)
+   - **Branch:** `main`
+   - **Runtime:** `Python 3`
+   - **Build Command:**
+     ```bash
+     pip install --upgrade pip && pip install -r requirements.txt
+     ```
+   - **Start Command:**
+     ```bash
+     streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
+     ```
+   - **Plan:** `Free`
+4. In **Environment Variables**, add:
+   - `PYTHON_VERSION`: `3.11.9`
+   - `STREAMLIT_SERVER_HEADLESS`: `true`
+   - `STREAMLIT_SERVER_ENABLE_CORS`: `false`
+   - `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION`: `false`
+5. Click **Create Web Service**. Render will deploy the application and give you a public URL like `https://openreview-ai.onrender.com`.
 
 ---
 
