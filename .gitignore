@@ -11,10 +11,11 @@ venv/
 ENV/
 
 # Streamlit
-.streamlit/
+.streamlit/secrets.toml
 
 # Testing & Coverage
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -22,6 +23,14 @@ htmlcov/
 *.log
 temp_code_*.py
 scratch/
+
+# Runtime outputs
+outputs/code/*
+!outputs/code/.gitkeep
+outputs/runs/*
+!outputs/runs/.gitkeep
+outputs/reports/*
+!outputs/reports/.gitkeep
 
 # IDE files
 .vscode/
