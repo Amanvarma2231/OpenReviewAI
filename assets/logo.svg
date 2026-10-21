@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <!-- Background circle -->
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E3A5F;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0D1F3C;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8B5CF6;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Shield background -->
+  <circle cx="60" cy="60" r="58" fill="url(#bg)" />
+  <circle cx="60" cy="60" r="58" fill="none" stroke="url(#accent)" stroke-width="2" opacity="0.6"/>
+
+  <!-- Shield shape -->
+  <path d="M60 18 L88 30 L88 58 C88 75 76 87 60 94 C44 87 32 75 32 58 L32 30 Z"
+        fill="url(#accent)" opacity="0.15"/>
+  <path d="M60 18 L88 30 L88 58 C88 75 76 87 60 94 C44 87 32 75 32 58 L32 30 Z"
+        fill="none" stroke="url(#accent)" stroke-width="2" filter="url(#glow)"/>
+
+  <!-- Code brackets inside shield -->
+  <text x="44" y="62" font-family="JetBrains Mono, monospace" font-size="20"
+        font-weight="700" fill="#3B82F6" filter="url(#glow)">&lt;/&gt;</text>
+
+  <!-- Check mark at bottom right -->
+  <circle cx="85" cy="85" r="14" fill="#10B981"/>
+  <path d="M78 85 L83 90 L92 80" stroke="white" stroke-width="2.5"
+        stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

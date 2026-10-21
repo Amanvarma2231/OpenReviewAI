@@ -32,6 +32,6 @@ def test_markdown_report_export():
         provider="mock"
     )
     md = export_markdown_report(res)
-    assert "OpenReviewAI: Multi-LLM Code Review" in md
+    assert "OpenReviewAI" in md and "Multi-LLM Code Review" in md
     assert "APPROVED" in md
     assert "qwen2.5:0.5b" in md

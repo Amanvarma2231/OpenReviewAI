@@ -26,16 +26,30 @@ if __name__ == '__main__':
 """
     result = execute_code_safely(combined_code, language, timeout_seconds)
     
-    # Analyze if tests passed
-    passed = result.success and not result.stderr
+    # Analyze if tests passed.
+    # Ignore benign Python-path warnings (e.g. "Failed to find real location of …")
+    # that appear on some Windows installs but are not actual errors.
+    _BENIGN_STDERR_PATTERNS = (
+        "failed to find real location",
+        "deprecationwarning",
+        "pendingdeprecation",
+        "futurewarning",
+        "resourcewarning",
+    )
+    real_stderr = "\n".join(
+        line for line in result.stderr.splitlines()
+        if not any(pat in line.lower() for pat in _BENIGN_STDERR_PATTERNS)
+    ).strip()
+
+    passed = result.success and not real_stderr
     test_info: Dict[str, Any] = {
         "tests_provided": True,
         "tests_passed": passed,
     }
-    
+
     if not passed:
         # Extract assertion or exception details
-        trace_match = re.search(r"(\w+Error: .+)", result.stderr)
+        trace_match = re.search(r"(\w+Error: .+)", real_stderr)
         if trace_match:
             test_info["failure_reason"] = trace_match.group(1)
             
