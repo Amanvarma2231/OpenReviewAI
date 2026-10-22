@@ -36,5 +36,6 @@ outputs/reports/*
 # IDE files
 .vscode/
 .idea/
+.snapshots/
 
 

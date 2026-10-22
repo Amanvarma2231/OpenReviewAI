@@ -8,12 +8,20 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"/></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python 3.11+"/></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"/></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/pytest-42%20passed-brightgreen.svg" alt="42 Tests Passing"/></a>
-  <img src="https://img.shields.io/badge/Theme-Light%20%7C%20Dark-blueviolet.svg" alt="Theme"/>
-  <a href="https://render.com/deploy?repo=https://github.com/Amanvarma2231/OpenReviewAI"><img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render"/></a>
+  <a href="docs/TESTING.md"><img src="https://img.shields.io/badge/pytest-51%20passed-brightgreen.svg" alt="51 Tests Passing"/></a>
+  <a href="docs/ARCHITECTURE.md"><img src="https://img.shields.io/badge/Orchestrator-LangGraph%20StateGraph-orange.svg" alt="LangGraph"/></a>
+  <a href="https://ollama.com/"><img src="https://img.shields.io/badge/Local%20Inference-Ollama-black.svg" alt="Ollama"/></a>
 </p>
+
+### 📚 Production Documentation
+- 🏛️ **[System Architecture](docs/ARCHITECTURE.md):** LangGraph StateGraph, 3 specialized agents, state schema, event streaming, and acceptance criteria.
+- 🪟 **[Windows 11 Setup & Install](docs/SETUP.md):** Exact PowerShell installation, Ollama daemon, model downloads, and troubleshooting.
+- 🧪 **[Testing & QA Guide](docs/TESTING.md):** 51-test suite breakdown, mock testing, and live Ollama diagnostics.
+- 🛡️ **[Security & Sandboxing](docs/SECURITY.md):** Zip Slip defense, symlink rejection, timeout limits, and isolated subprocess execution.
+- 📜 **[Models & Licenses](docs/MODELS_AND_LICENSES.md):** Qwen, DeepSeek, Gemma, Mistral licenses, open weights vs OSI open source.
+- 📖 **[User Guide](docs/USER_GUIDE.md):** Walkthrough of all 9 studio pages, project ZIP uploads, and unified diff inspection.
 
 ## 🎯 Project Overview & Internship Specification
 

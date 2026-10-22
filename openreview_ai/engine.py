@@ -69,6 +69,147 @@ class WorkflowOrchestrator:
         else:
             self.validator = None
 
+    def _run_langgraph(
+        self,
+        task_prompt: str,
+        target_language: str = "python",
+        unit_tests: Optional[str] = None,
+        existing_code: Optional[str] = None,
+        on_event: Optional[Callable[[str, dict], None]] = None,
+    ) -> WorkflowResult:
+        from openreview_ai.langgraph_workflow import build_langgraph_workflow
+        import uuid
+        from datetime import datetime, timezone
+
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        initial_state = {
+            "run_id": run_id,
+            "task_description": task_prompt,
+            "task_prompt": task_prompt,
+            "input_mode": "existing_code" if existing_code else "generate",
+            "target_language": target_language,
+            "unit_tests": unit_tests,
+            "existing_code": existing_code,
+            "generator_model": self.generator.model_name,
+            "reviewer_model": self.reviewer.model_name,
+            "validator_model": self.validator.model_name if self.validator else None,
+            "validator_configuration": {
+                "enable_sandbox": self.config.enable_sandbox_execution,
+                "timeout": self.config.sandbox_timeout_seconds,
+            },
+            "current_round": 0,
+            "current_attempt": 1,
+            "max_retries": self.config.max_retries,
+            "max_attempts": self.config.max_retries,
+            "current_code": "",
+            "generated_code": "",
+            "previous_code": None,
+            "explanation": "",
+            "syntax_result": None,
+            "validation_results": None,
+            "execution_result": None,
+            "test_results": None,
+            "test_status": "NOT_RUN",
+            "reviews": [],
+            "reviewer_findings": [],
+            "current_stage": "START",
+            "is_approved": False,
+            "status": "PENDING",
+            "acceptance_status": AcceptanceStatus.NOT_RUN.value,
+            "final_status": "PENDING",
+            "stop_reason": "",
+            "iteration_history": [],
+            "workflow_errors": [],
+            "started_at": now_iso,
+            "completed_at": None,
+            "duration": 0.0,
+            "duration_seconds": 0.0,
+        }
+
+        app = build_langgraph_workflow(
+            config=self.config,
+            generator=self.generator,
+            reviewer=self.reviewer,
+            validator=self.validator,
+            on_event=on_event,
+        )
+        final_state = app.invoke(initial_state)
+
+        # Translate final_state into WorkflowResult
+        iterations: List[IterationStep] = []
+        messages: List[AgentMessage] = []
+        history = final_state.get("iteration_history") or []
+        reviews_data = final_state.get("reviews") or []
+
+        total_bugs = 0
+        for idx, snap in enumerate(history):
+            rnd = snap.get("round", idx)
+            code = snap.get("code", final_state.get("current_code", ""))
+            expl = snap.get("explanation", "")
+
+            ex_model = None
+            if final_state.get("execution_result"):
+                ex_model = ExecutionResult(**final_state["execution_result"])
+
+            rev_models = [ReviewFeedback(**r) for r in reviews_data]
+            bugs_in_round = sum(len(r.bugs) for r in rev_models)
+            total_bugs += bugs_in_round
+
+            iterations.append(IterationStep(
+                round_idx=rnd,
+                code=code,
+                generator_explanation=expl,
+                execution=ex_model,
+                reviews=rev_models,
+                status="APPROVED" if final_state.get("is_approved") and idx == len(history) - 1 else "CHANGES_REQUESTED",
+                open_bug_count=bugs_in_round,
+            ))
+
+            messages.append(AgentMessage(
+                sender_role="Generator",
+                sender_model=self.generator.model_name,
+                round_idx=rnd,
+                content=f"Code generation snapshot:\n{expl}",
+                metadata={"code": code}
+            ))
+            if rev_models:
+                messages.append(AgentMessage(
+                    sender_role="Reviewer",
+                    sender_model=self.reviewer.model_name,
+                    round_idx=rnd,
+                    content=f"Review assessment: Status={rev_models[0].status.value}\nSummary: {rev_models[0].summary}",
+                    metadata={"verdict": rev_models[0].verdict or rev_models[0].status.value}
+                ))
+
+        acc_st = final_state.get("acceptance_status", AcceptanceStatus.NOT_RUN.value)
+        try:
+            acc_enum = AcceptanceStatus(acc_st)
+        except Exception:
+            acc_enum = AcceptanceStatus.NOT_RUN
+
+        fin_status = final_state.get("status", "APPROVED" if final_state.get("is_approved") else "FAILED")
+
+        return WorkflowResult(
+            task_prompt=task_prompt,
+            target_language=target_language,
+            final_code=final_state.get("current_code", ""),
+            status=fin_status,
+            rounds_count=max(1, len(history)),
+            iterations=iterations,
+            messages=messages,
+            total_bugs_detected=total_bugs,
+            total_bugs_fixed=total_bugs if fin_status == "APPROVED" else max(0, total_bugs - 1),
+            final_execution=ExecutionResult(**final_state["execution_result"]) if final_state.get("execution_result") else None,
+            generator_model=self.generator.model_name,
+            reviewer_model=self.reviewer.model_name,
+            validator_model=self.validator.model_name if self.validator else None,
+            provider=self.config.provider_type,
+            acceptance_status=acc_enum,
+            test_status=final_state.get("test_status", "NOT_RUN"),
+        )
+
     def run(
         self,
         task_prompt: str,
@@ -79,14 +220,23 @@ class WorkflowOrchestrator:
     ) -> WorkflowResult:
         """
         Executes the full multi-LLM review and correction loop.
-        
-        Args:
-            task_prompt: The coding prompt or user requirement.
-            target_language: Target programming language (default: python).
-            unit_tests: Optional unit test assertions for automated verification.
-            existing_code: Optional existing code string to review and repair.
-            on_event: Optional callback function receiving (event_name, data_dict).
+        Dispatches to LangGraph StateGraph if configured, otherwise uses direct engine.
         """
+        if getattr(self.config, "orchestrator_engine", "langgraph") == "langgraph":
+            try:
+                from openreview_ai.langgraph_workflow import LANGGRAPH_AVAILABLE
+                if LANGGRAPH_AVAILABLE:
+                    return self._run_langgraph(
+                        task_prompt=task_prompt,
+                        target_language=target_language,
+                        unit_tests=unit_tests,
+                        existing_code=existing_code,
+                        on_event=on_event,
+                    )
+            except Exception:
+                # Safe fallback to direct engine on any graph failure
+                pass
+
         def emit(event_name: str, data: dict):
             if on_event:
                 try:

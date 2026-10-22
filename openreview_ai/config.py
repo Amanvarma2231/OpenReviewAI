@@ -65,11 +65,13 @@ class WorkflowConfig:
     validator_model: str = os.getenv("DEFAULT_VALIDATOR_MODEL", "deepseek-coder:latest")
     
     # Workflow Loop Controls
+    orchestrator_engine: str = os.getenv("ORCHESTRATOR_ENGINE", "direct")  # 'direct' or 'langgraph'
     max_retries: int = int(os.getenv("DEFAULT_MAX_RETRIES", "3"))
     sandbox_timeout_seconds: int = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", "5"))
     enable_sandbox_execution: bool = True
     enable_syntax_check: bool = True
     enable_third_llm_validator: bool = True
+    strict_acceptance: bool = True
     temperature: float = 0.2
     
     @classmethod

@@ -54,28 +54,31 @@ You must scrutinize:
 1. Correctness: Does it solve the prompt accurately? Are there off-by-one errors, infinite loops, or wrong formulas?
 2. Edge Cases: Does it handle null/empty inputs, negative values, extreme bounds, duplicate items?
 3. Runtime & Exceptions: Are potential exceptions handled safely?
-4. Code Quality: Time/space complexity, adherence to clean coding principles, type hints.
+4. Code Quality & Security: Time/space complexity, injection risks, adherence to clean coding principles, type hints.
 
 CRITICAL INSTRUCTION:
 You MUST provide your final review evaluation in strict JSON format inside a ```json ... ``` code block.
 The JSON format MUST be:
 {
-  "has_bugs": true/false,
-  "status": "APPROVED" or "CHANGES_REQUESTED",
-  "overall_score": 1 to 10,
-  "summary": "Brief overall assessment",
-  "bugs": [
+  "verdict": "PASS" or "FAIL",
+  "summary": "Brief overall evaluation",
+  "issues": [
     {
-      "line_number": <int or null>,
-      "category": "LOGIC" | "SYNTAX" | "RUNTIME" | "EDGE_CASE" | "SECURITY" | "PERFORMANCE" | "STYLE",
-      "severity": "CRITICAL" | "MAJOR" | "MINOR" | "SUGGESTION",
-      "description": "Specific bug explanation",
-      "suggested_fix": "Exact recommended correction"
+      "severity": "critical" | "high" | "medium" | "low" | "suggestion",
+      "file": "example.py",
+      "line": <int or null>,
+      "category": "correctness" | "security" | "edge_case" | "runtime" | "performance" | "maintainability" | "syntax",
+      "description": "Specific flaw explanation",
+      "suggested_fix": "Concrete recommended correction",
+      "confidence": 0.0 to 1.0
     }
-  ]
+  ],
+  "requirements_met": ["List of requirements satisfied"],
+  "unresolved_concerns": ["Any remaining risks or unverified areas"]
 }
 
-If the code is completely correct, efficient, and handles edge cases, set "has_bugs": false, "status": "APPROVED", and "bugs": [].
+If the code is completely correct, efficient, and handles edge cases, set "verdict": "PASS", and "issues": [].
+If ANY flaw, unhandled edge-case, or test failure exists, set "verdict": "FAIL".
 Do NOT approve code that has unhandled edge cases or runtime crashes!
 """
 

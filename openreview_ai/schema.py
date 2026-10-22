@@ -7,18 +7,24 @@ from pydantic import BaseModel, Field
 
 class SeverityLevel(str, Enum):
     CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
     MAJOR = "MAJOR"
+    MEDIUM = "MEDIUM"
     MINOR = "MINOR"
+    LOW = "LOW"
     SUGGESTION = "SUGGESTION"
+    INFO = "INFO"
 
 
 class BugCategory(str, Enum):
+    CORRECTNESS = "CORRECTNESS"
     SYNTAX = "SYNTAX"
     LOGIC = "LOGIC"
     RUNTIME = "RUNTIME"
     EDGE_CASE = "EDGE_CASE"
     SECURITY = "SECURITY"
     PERFORMANCE = "PERFORMANCE"
+    MAINTAINABILITY = "MAINTAINABILITY"
     STYLE = "STYLE"
 
 
@@ -44,11 +50,13 @@ class AcceptanceStatus(str, Enum):
 
 class BugItem(BaseModel):
     id: str = Field(default_factory=lambda: f"BUG-{datetime.now().strftime('%M%S%f')[:8]}")
+    file: Optional[str] = None
     line_number: Optional[int] = None
     category: BugCategory = BugCategory.LOGIC
     severity: SeverityLevel = SeverityLevel.MAJOR
     description: str
     suggested_fix: str
+    confidence: float = 1.0
     resolved: bool = False
 
 
@@ -58,8 +66,11 @@ class ReviewFeedback(BaseModel):
     status: ReviewStatus
     has_bugs: bool
     summary: str
+    verdict: Optional[str] = None
     bugs: List[BugItem] = Field(default_factory=list)
     overall_score: int = Field(default=7, ge=1, le=10)
+    requirements_met: List[str] = Field(default_factory=list)
+    unresolved_concerns: List[str] = Field(default_factory=list)
     raw_response: Optional[str] = None
 
 

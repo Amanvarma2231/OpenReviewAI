@@ -33,6 +33,7 @@ from openreview_ai.utils.diff_viewer import compute_unified_diff, compute_line_c
 from openreview_ai.utils.report_exporter import export_markdown_report
 from openreview_ai.providers.ollama import OllamaProvider
 from openreview_ai.sandbox.syntax_checker import check_syntax
+from openreview_ai.sandbox.safe_workspace import SafeProjectWorkspace, SecurityValidationError
 
 from models.schemas import (
     WorkflowReport,
@@ -121,6 +122,21 @@ if "temperature_setting" not in st.session_state:
 
 if "ollama_url_setting" not in st.session_state:
     st.session_state.ollama_url_setting = "http://localhost:11434"
+
+if "project_manifest" not in st.session_state:
+    st.session_state.project_manifest = []
+
+if "project_diffs" not in st.session_state:
+    st.session_state.project_diffs = {}
+
+if "improved_zip_bytes" not in st.session_state:
+    st.session_state.improved_zip_bytes = None
+
+if "orchestrator_engine_setting" not in st.session_state:
+    st.session_state.orchestrator_engine_setting = "langgraph"
+
+if "live_events_log" not in st.session_state:
+    st.session_state.live_events_log = []
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  4. DYNAMIC HUMAN DESIGN SYSTEM (LIGHT & DARK THEMES)
@@ -1065,6 +1081,7 @@ with st.sidebar:
     nav_items = [
         ("Dashboard", "📊 Dashboard"),
         ("New Code Task", "➕ New Code Task"),
+        ("Upload Project", "📦 Upload Project"),
         ("Live Workflow", "⚡ Live Workflow"),
         ("Code Comparison", "🔍 Code Comparison"),
         ("Review Results", "🛡️ Review Results"),
@@ -1444,6 +1461,19 @@ def render_new_code_task():
         gen_m = st.selectbox("LLM 1 (Generator)", available_models, index=0)
         rev_m = st.selectbox("LLM 2 (Reviewer)", available_models, index=min(1, len(available_models)-1))
         
+        # Engine Architecture
+        engine_options = ["LangGraph StateGraph", "Direct Controller"]
+        default_engine_idx = 0 if st.session_state.orchestrator_engine_setting == "langgraph" else 1
+        selected_engine = st.radio(
+            "Orchestrator Architecture",
+            options=engine_options,
+            index=default_engine_idx,
+            help="Choose LangGraph StateGraph (cyclic multi-agent state machine) or Direct Controller",
+            horizontal=True,
+        )
+        chosen_engine = "langgraph" if selected_engine == "LangGraph StateGraph" else "direct"
+        st.session_state.orchestrator_engine_setting = chosen_engine
+
         # Guardrails
         max_retries = st.slider("Max Review Iterations", 1, 5, st.session_state.max_retries_setting)
         enable_sandbox = st.checkbox("Subprocess Sandbox Execution", value=st.session_state.sandbox_enabled)
@@ -1475,32 +1505,66 @@ def render_new_code_task():
             enable_sandbox_execution=enable_sandbox,
             enable_third_llm_validator=True,
             temperature=st.session_state.temperature_setting,
+            orchestrator_engine=chosen_engine,
         )
 
         progress_ph = st.empty()
         status_ph = st.empty()
 
+        st.session_state.live_events_log = []
+
         events_map = {
             "workflow_started": (10, "Initialising multi-agent review network..."),
+            "run_started": (10, "LangGraph StateGraph initialized..."),
+            "input_validated": (15, "Input & safety checks passed..."),
+            "files_analyzed": (20, "Source files analyzed..."),
             "generation_started": (25, f"LLM 1 ({gen_m}) generating code candidate..."),
+            "generator_started": (25, f"LLM 1 ({gen_m}) generating code candidate..."),
             "generation_completed": (45, "Code written — validating AST syntax..."),
-            "execution_started": (55, "Executing code in isolated subprocess sandbox..."),
-            "execution_completed": (65, "Sandbox execution complete — passing to reviewer..."),
-            "review_started": (75, f"LLM 2 ({rev_m}) performing static audit..."),
+            "generator_completed": (45, "Code written — running AST & static analysis..."),
+            "syntax_check_started": (50, "Parsing Python AST & syntax rules..."),
+            "syntax_check_completed": (55, "Syntax checks verified..."),
+            "execution_started": (60, "Executing code in isolated subprocess sandbox..."),
+            "tests_started": (60, "Executing test assertions in sandbox..."),
+            "execution_completed": (70, "Sandbox execution complete — passing to reviewer..."),
+            "tests_completed": (70, "Tests executed — passing to reviewer..."),
+            "review_started": (75, f"LLM 2 ({rev_m}) performing independent audit..."),
+            "reviewer_started": (75, f"LLM 2 ({rev_m}) performing independent audit..."),
             "review_completed": (85, "Review complete — assessing security consensus..."),
-            "fix_started": (90, "Defects identified — LLM 1 applying targeted fixes..."),
+            "reviewer_completed": (85, "Review complete — assessing security consensus..."),
+            "validator_started": (88, "LLM 3 Validator assessing empirical evidence..."),
+            "validator_completed": (90, "Evidence arbitration complete..."),
+            "correction_started": (92, "Defects identified — LLM 1 applying targeted fixes..."),
+            "fix_started": (92, "Defects identified — LLM 1 applying targeted fixes..."),
+            "correction_completed": (95, "Fix applied — re-validating updated code..."),
             "round_approved": (98, "Consensus reached — code approved!"),
             "max_retries_reached": (98, "Max retry limit reached — compiling best version."),
+            "retry_limit_reached": (98, "Retry limit reached — preserving latest findings."),
             "workflow_completed": (100, "Workflow successfully finalized!"),
+            "run_completed": (100, "StateGraph finalized successfully!"),
         }
 
         def on_event_callback(evt_name: str, evt_data: dict):
+            now_str = datetime.now().strftime("%H:%M:%S")
+            stage = evt_data.get("stage", evt_name) if isinstance(evt_data, dict) else evt_name
+            msg = evt_data.get("message", "") if isinstance(evt_data, dict) else ""
+            attempt = evt_data.get("attempt_number", 1) if isinstance(evt_data, dict) else 1
+            st.session_state.live_events_log.append({
+                "time": now_str,
+                "event": evt_name,
+                "stage": stage,
+                "attempt": attempt,
+                "message": msg,
+                "metadata": evt_data if isinstance(evt_data, dict) else {},
+            })
             if evt_name in events_map:
-                pct, msg = events_map[evt_name]
-                progress_ph.progress(pct, text=msg)
+                pct, default_msg = events_map[evt_name]
+                progress_ph.progress(pct, text=f"[{chosen_engine.upper()}] {msg or default_msg}")
+            elif msg:
+                progress_ph.progress(min(95, 10 + len(st.session_state.live_events_log) * 4), text=f"[{chosen_engine.upper()}] {msg}")
 
         try:
-            with st.spinner("Multi-agent team analyzing and verifying code..."):
+            with st.spinner(f"Multi-agent team ({chosen_engine}) analyzing and verifying code..."):
                 t_start = time.time()
                 orchestrator = WorkflowOrchestrator(config=config)
                 result = orchestrator.run(
@@ -1535,6 +1599,286 @@ def render_new_code_task():
             progress_ph.empty()
             status_ph.empty()
             st.error(f"❌ Execution Error: {str(e)}")
+            with st.expander("Technical Traceback"):
+                st.code(traceback.format_exc(), language="python")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  10B. PAGE 2B: UPLOAD PROJECT (ZIP ARCHIVE & MULTI-FILE WORKSPACE)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_upload_project():
+    render_header("Upload & Improve Project")
+
+    st.markdown("""
+    <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.2rem;">
+        <div style="font-weight:600;font-size:0.98rem;color:var(--text-primary);margin-bottom:0.25rem;">
+            📦 Isolated Project Workspace & Multi-File Codebase Improver
+        </div>
+        <div style="font-size:0.86rem;color:var(--text-secondary);line-height:1.5;">
+            Upload a Python project archive (<code>.zip</code>) or single script. The system safely extracts files into an isolated workspace,
+            strictly guards against path traversal (Zip Slip), identifies tests and dependencies, allows file selection, and applies
+            autonomous multi-agent improvements to a working copy without touching your original files.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_r = st.columns([2.5, 1])
+
+    with col_l:
+        st.markdown("#### 1. Project Ingestion & File Manifest")
+        
+        up_archive = st.file_uploader(
+            "Upload Project Archive (.zip) or Python Script (.py)",
+            type=["zip", "py"],
+            help="Max archive size: 15MB. Symlinks, path traversal, virtual environments, and secrets are automatically blocked."
+        )
+
+        if up_archive:
+            if "last_uploaded_name" not in st.session_state or st.session_state.last_uploaded_name != up_archive.name:
+                try:
+                    ws = SafeProjectWorkspace()
+                    if up_archive.name.endswith(".zip"):
+                        manifest = ws.ingest_zip(up_archive.getvalue())
+                    else:
+                        text_val = up_archive.getvalue().decode("utf-8", errors="replace")
+                        manifest = ws.ingest_single_file(up_archive.name, text_val)
+
+                    st.session_state.project_workspace = ws
+                    st.session_state.project_manifest = manifest
+                    st.session_state.last_uploaded_name = up_archive.name
+                    st.session_state.project_diffs = {}
+                    st.session_state.improved_zip_bytes = None
+                    st.toast(f"✅ Successfully ingested {len(manifest)} files!", icon="📦")
+                except SecurityValidationError as sec_err:
+                    st.error(f"🛡️ Security Block: {sec_err}")
+                except Exception as e:
+                    st.error(f"❌ Failed to extract archive: {e}")
+
+        manifest = st.session_state.project_manifest
+        ws: Optional[SafeProjectWorkspace] = st.session_state.get("project_workspace")
+
+        if manifest and ws:
+            py_files = [m["relative_path"] for m in manifest if m["is_python"]]
+            test_files = [m["relative_path"] for m in manifest if m["is_test"]]
+            total_loc = sum(m["lines"] for m in manifest if m["is_python"])
+
+            # ── 4 Telemetry Metrics ──
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            with mc1:
+                st.markdown(f"""
+                <div class="stat-card" style="padding:0.75rem 1rem;">
+                    <div class="stat-label">Total Files</div>
+                    <div class="stat-value" style="font-size:1.3rem;">{len(manifest)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc2:
+                st.markdown(f"""
+                <div class="stat-card" style="padding:0.75rem 1rem;">
+                    <div class="stat-label">Python Modules</div>
+                    <div class="stat-value" style="font-size:1.3rem;color:var(--primary);">{len(py_files)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc3:
+                st.markdown(f"""
+                <div class="stat-card" style="padding:0.75rem 1rem;">
+                    <div class="stat-label">Total Lines</div>
+                    <div class="stat-value" style="font-size:1.3rem;">{total_loc}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc4:
+                st.markdown(f"""
+                <div class="stat-card" style="padding:0.75rem 1rem;">
+                    <div class="stat-label">Test Suites</div>
+                    <div class="stat-value" style="font-size:1.3rem;color:var(--success);">{len(test_files)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+
+            # ── File Selection ──
+            st.markdown("##### Select Target File for Multi-Agent Improvisation")
+            if py_files:
+                selected_target_file = st.selectbox(
+                    "Target File",
+                    py_files,
+                    index=0,
+                    help="Choose the primary Python module to audit, optimize, and refactor"
+                )
+                
+                # Preview target file
+                content = ws.read_working_file(selected_target_file)
+                if content is not None:
+                    with st.expander(f"👁️ View Content: `{selected_target_file}` ({len(content.splitlines())} lines)", expanded=False):
+                        st.code(content, language="python")
+            else:
+                st.warning("⚠️ No Python (.py) files detected in the uploaded archive.")
+                selected_target_file = None
+
+            # ── Manifest Table ──
+            with st.expander(f"📋 Project File Manifest ({len(manifest)} files)", expanded=False):
+                manifest_data = []
+                for m in manifest:
+                    manifest_data.append({
+                        "File Path": m["relative_path"],
+                        "Lines": m["lines"],
+                        "Size (Bytes)": m["size_bytes"],
+                        "Type": "Python Test" if m["is_test"] else "Python Source" if m["is_python"] else "Asset/Config"
+                    })
+                st.dataframe(manifest_data, use_container_width=True)
+
+        else:
+            st.info("👆 Upload a `.zip` archive or `.py` file to inspect its manifest and start project improvement.")
+            selected_target_file = None
+
+    with col_r:
+        st.markdown("#### 2. Improvement Directives")
+
+        # Preset Objective
+        impr_obj_name = st.selectbox(
+            "Primary Objective",
+            list(IMPROVISE_PRESETS.keys()),
+            index=0,
+            key="proj_impr_preset"
+        )
+        impr_cfg = IMPROVISE_PRESETS[impr_obj_name]
+
+        proj_instructions = st.text_area(
+            "Improvement Requirements",
+            value=impr_cfg["prompt"],
+            height=110,
+            help="Natural language prompt specifying what the multi-LLM team should inspect, fix, or optimize."
+        )
+
+        st.markdown("#### 3. Agent Execution Engine")
+        prov_options = ["mock", "ollama"]
+        prov_choice = st.selectbox(
+            "Provider",
+            prov_options,
+            index=0 if st.session_state.provider_choice == "mock" else 1,
+            format_func=lambda x: "⚡ Smart Simulator (Instant, No GPU)" if x == "mock" else "🦙 Ollama (Local Models)",
+            key="proj_prov_choice"
+        )
+
+        available_models = ollama_models if (ollama_online and ollama_models) else [
+            "qwen2.5:0.5b", "qwen2.5-coder:1.5b", "deepseek-coder:1.3b", "gemma2:2b", "mistral:latest"
+        ]
+
+        p_gen_m = st.selectbox("LLM 1 (Generator)", available_models, index=0, key="proj_gen_m")
+        p_rev_m = st.selectbox("LLM 2 (Reviewer)", available_models, index=min(1, len(available_models)-1), key="proj_rev_m")
+        
+        # Engine Architecture
+        p_engine_choice = st.radio(
+            "Orchestrator Architecture",
+            options=["LangGraph StateGraph", "Direct Controller"],
+            index=0 if st.session_state.orchestrator_engine_setting == "langgraph" else 1,
+            horizontal=True,
+            key="proj_engine_choice",
+        )
+        p_engine = "langgraph" if p_engine_choice == "LangGraph StateGraph" else "direct"
+        st.session_state.orchestrator_engine_setting = p_engine
+
+        p_max_retries = st.slider("Max Iterations", 1, 5, 3, key="proj_retries")
+        p_sandbox = st.checkbox("Subprocess Sandbox", value=True, key="proj_sb")
+
+        st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+        run_proj_btn = st.button("🚀 Improve Selected Module", type="primary", use_container_width=True, disabled=(not ws or not selected_target_file))
+
+    # ── Execute Project Improvement ──
+    if run_proj_btn and ws and selected_target_file:
+        file_code = ws.read_working_file(selected_target_file)
+        if not file_code:
+            st.error("Cannot read content of selected file.")
+            return
+
+        config = WorkflowConfig(
+            provider_type=prov_choice,
+            generator_model=p_gen_m,
+            reviewer_model=p_rev_m,
+            validator_model=st.session_state.val_model_setting,
+            max_retries=p_max_retries,
+            enable_sandbox_execution=p_sandbox,
+            enable_third_llm_validator=True,
+            temperature=0.2,
+            orchestrator_engine=p_engine,
+        )
+
+        progress_bar = st.progress(15, text=f"Analyzing {selected_target_file} with Multi-Agent team...")
+        st.session_state.live_events_log = []
+
+        def on_proj_event(evt_name: str, evt_data: dict):
+            now_str = datetime.now().strftime("%H:%M:%S")
+            stage = evt_data.get("stage", evt_name) if isinstance(evt_data, dict) else evt_name
+            msg = evt_data.get("message", "") if isinstance(evt_data, dict) else ""
+            attempt = evt_data.get("attempt_number", 1) if isinstance(evt_data, dict) else 1
+            st.session_state.live_events_log.append({
+                "time": now_str,
+                "event": evt_name,
+                "stage": stage,
+                "attempt": attempt,
+                "message": msg,
+                "metadata": evt_data if isinstance(evt_data, dict) else {},
+            })
+            if msg:
+                progress_bar.progress(min(95, 20 + len(st.session_state.live_events_log) * 5), text=f"[{p_engine.upper()}] {msg}")
+
+        try:
+            with st.spinner(f"Multi-LLM network ({p_engine}) auditing and improving project module..."):
+                t0 = time.time()
+                orchestrator = WorkflowOrchestrator(config=config)
+                result = orchestrator.run(
+                    task_prompt=proj_instructions,
+                    target_language="python",
+                    existing_code=file_code,
+                    unit_tests=None,
+                    on_event=on_proj_event,
+                )
+                elapsed = time.time() - t0
+
+            progress_bar.empty()
+
+            # Save improved code back to isolated working copy
+            ws.write_working_file(selected_target_file, result.final_code)
+            st.session_state.workflow_result = result
+            save_result_to_history(result, elapsed)
+
+            # Compute project diffs and generate downloadable ZIP
+            diffs = ws.compute_project_diff()
+            st.session_state.project_diffs = diffs
+            st.session_state.improved_zip_bytes = ws.export_improved_zip()
+
+            st.toast(f"✅ Module `{selected_target_file}` successfully improved in {elapsed:.1f}s!", icon="🏆")
+            st.success(f"🎉 **Module Improved & Verified!** Status: `{result.status}` in {result.rounds_count} iteration(s).")
+
+            # ── Action Buttons ──
+            dcol1, dcol2, dcol3 = st.columns(3)
+            with dcol1:
+                if st.session_state.improved_zip_bytes:
+                    st.download_button(
+                        label="📦 Download Improved Project (.ZIP)",
+                        data=st.session_state.improved_zip_bytes,
+                        file_name="improved_project.zip",
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True
+                    )
+            with dcol2:
+                if st.button("👉 View Review Findings", use_container_width=True, key="proj_btn_rev"):
+                    st.session_state.active_page = "Review Results"
+                    st.rerun()
+            with dcol3:
+                if st.button("👉 View Code Diff", use_container_width=True, key="proj_btn_diff"):
+                    st.session_state.active_page = "Code Comparison"
+                    st.rerun()
+
+            # Show diff expander
+            if diffs:
+                with st.expander(f"🔍 Project Diffs ({len(diffs)} modified files)", expanded=True):
+                    for r_path, d_text in diffs.items():
+                        st.markdown(f"**`{r_path}`**")
+                        st.code(d_text, language="diff")
+
+        except Exception as e:
+            progress_bar.empty()
+            st.error(f"❌ Project execution error: {e}")
             with st.expander("Technical Traceback"):
                 st.code(traceback.format_exc(), language="python")
 
@@ -1607,7 +1951,39 @@ def render_live_workflow():
     with m3: st.metric("Bugs Flagged", res.total_bugs_detected)
     with m4: st.metric("Bugs Auto-Fixed", res.total_bugs_fixed)
 
-    st.markdown('<div style="margin-top:1.2rem;"></div>', unsafe_allow_html=True)
+    engine_used = getattr(res, "orchestrator_engine", st.session_state.orchestrator_engine_setting)
+    engine_label = "LangGraph StateGraph" if engine_used == "langgraph" else "Direct Controller"
+
+    st.markdown(f"""
+    <div style="display:flex;gap:0.75rem;align-items:center;margin: 1rem 0;padding:0.75rem 1rem;background:var(--bg-surface-alt);border:1px solid var(--border-subtle);border-radius:8px;">
+        <span class="pro-pill pill-online">⚙️ Engine: {engine_label}</span>
+        <span class="pro-pill {'pill-online' if st_approved else 'pill-warning'}">🎯 Acceptance: {'FINAL_ACCEPTED' if st_approved else 'RETRY_LIMIT_REACHED'}</span>
+        <span style="font-size:0.8rem;color:var(--text-muted);">Run ID: <code>{res.run_id}</code></span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Real-Time Event Stream Log ──
+    st.markdown("### 📡 Real-Time Backend Event Stream")
+    st.caption("Live streaming event log captured directly from the orchestrator engine (no simulated timers).")
+    
+    events_log = st.session_state.live_events_log
+    if events_log:
+        evt_rows = []
+        for e in events_log:
+            evt_rows.append({
+                "Time": e.get("time", ""),
+                "Stage": e.get("stage", ""),
+                "Attempt": e.get("attempt", 1),
+                "Event Type": e.get("event", ""),
+                "Message": e.get("message", ""),
+            })
+        st.dataframe(evt_rows, use_container_width=True, hide_index=True)
+        with st.expander("🔍 View Raw Event Payloads (JSON)"):
+            st.json(events_log)
+    else:
+        st.info("ℹ️ Live event trace is recorded whenever a workflow executes. Run a task to stream live events.")
+
+    st.markdown('<div style="margin-top:1.5rem;"></div>', unsafe_allow_html=True)
 
     # ── Multi-Agent Communication Transcript ──
     st.markdown("### 💬 Multi-Agent Conversation Transcript")
@@ -1739,6 +2115,24 @@ def render_review_results():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Requirements & Concerns Summary ──
+    latest_step = res.iterations[-1] if res.iterations else None
+    if latest_step and latest_step.reviews:
+        last_rev = latest_step.reviews[0]
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            reqs = getattr(last_rev, "requirements_met", [])
+            if reqs:
+                st.markdown("#### ✅ Requirements Verified")
+                for req in reqs:
+                    st.markdown(f"- 🟢 {req}")
+        with rc2:
+            concerns = getattr(last_rev, "unresolved_concerns", [])
+            if concerns:
+                st.markdown("#### ⚠️ Unresolved Concerns")
+                for conc in concerns:
+                    st.warning(f"• {conc}")
+
     # ── Detailed Findings per Round ──
     st.markdown("### 🐛 Detailed Defect Audit Trail")
     all_bugs = [b for step in res.iterations for r in step.reviews for b in r.bugs]
@@ -1746,6 +2140,14 @@ def render_review_results():
     if all_bugs:
         for idx, b in enumerate(all_bugs):
             sev_str = b.severity.value.lower() if hasattr(b.severity, "value") else str(b.severity).lower()
+            file_badge = f"<span style='font-size:0.75rem;color:var(--text-muted);'>📄 {b.file}</span>" if getattr(b, "file", None) else ""
+            line_badge = f"<span style='font-size:0.75rem;color:var(--text-muted);'>Line {b.line_number}</span>" if b.line_number else ""
+            conf_val = getattr(b, "confidence", None)
+            conf_badge = f"<span style='font-size:0.75rem;color:var(--text-muted);'>Confidence: {int(conf_val*100)}%</span>" if conf_val is not None else ""
+            
+            loc_parts = " · ".join(filter(None, [file_badge, line_badge, conf_badge]))
+            loc_html = f"<div style='font-size:0.75rem;color:var(--text-muted);margin-top:2px;'>{loc_parts}</div>" if loc_parts else ""
+
             st.markdown(f"""
             <div class="bug-card {sev_str}">
                 <div class="bug-header">
@@ -1753,7 +2155,7 @@ def render_review_results():
                         {b.severity}
                     </span>
                     <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);">[{b.category}]</span>
-                    {f"<span style='font-size:0.75rem;color:var(--text-muted);'>Line {b.line_number}</span>" if b.line_number else ""}
+                    {loc_html}
                 </div>
                 <div class="bug-desc">{b.description}</div>
                 <div class="bug-fix-box">💡 <strong>Suggested Fix:</strong> {b.suggested_fix}</div>
@@ -1801,8 +2203,17 @@ def render_testing_results():
         st.markdown("#### 2. Subprocess Sandbox Execution")
         if res.final_execution:
             fe = res.final_execution
-            ex_badge = "pill-online" if fe.success else "pill-danger"
-            st.markdown(f'<div class="pro-pill {ex_badge}">{"✅ Subprocess Exit 0" if fe.success else "❌ Subprocess Failed"}</div>', unsafe_allow_html=True)
+            tests_info = getattr(fe, "test_results", {}) or {}
+            tests_provided = tests_info.get("tests_provided", False)
+            tests_passed = tests_info.get("tests_passed", fe.success)
+
+            if tests_provided:
+                ex_badge = "pill-online" if tests_passed else "pill-danger"
+                st_label = "✅ TESTS_PASSED" if tests_passed else "❌ TESTS_FAILED"
+                st.markdown(f'<div class="pro-pill {ex_badge}">{st_label}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="pro-pill pill-warning">⚠️ NOT_RUN: No Test Suite Provided</div>', unsafe_allow_html=True)
+
             st.metric("Execution Runtime", f"{fe.execution_time_ms:.1f} ms")
 
             st.markdown("**Standard Output (stdout):**")
@@ -1811,7 +2222,35 @@ def render_testing_results():
                 st.markdown("**Standard Error (stderr):**")
                 st.code(fe.stderr.strip(), language="text")
         else:
+            st.markdown('<div class="pro-pill pill-danger">⚠️ NOT_RUN: Sandbox Execution Disabled</div>', unsafe_allow_html=True)
             st.info("Sandbox subprocess execution was bypassed in configuration.")
+
+    st.markdown('<div style="margin-top:1.5rem;"></div>', unsafe_allow_html=True)
+
+    # ── Interactive Test Runner Tool ──
+    st.markdown("### 🧪 Live Sandbox Test Suite Runner")
+    st.caption("Provide unit test assertions to verify behavioral correctness against the final code.")
+    
+    test_code_input = st.text_area(
+        "Unit Test Assertions (Python)",
+        placeholder="assert solve(5) == 120\nassert solve(0) == 1\nprint('All test assertions passed successfully!')",
+        height=100,
+        key="testing_page_test_input",
+    )
+    if st.button("▶️ Execute Tests on Final Code", type="primary"):
+        from openreview_ai.sandbox.test_runner import run_code_with_tests
+        with st.spinner("Executing test assertions in isolated subprocess..."):
+            exec_res = run_code_with_tests(res.final_code, test_code_input)
+        
+        t_ok = exec_res.test_results.get("tests_passed", exec_res.success)
+        if t_ok:
+            st.success(f"🎉 **TESTS_PASSED!** All assertions executed successfully in {exec_res.execution_time_ms:.1f}ms.")
+            if exec_res.stdout.strip():
+                st.code(exec_res.stdout.strip(), language="text")
+        else:
+            st.error(f"❌ **TESTS_FAILED!** Exit code: {exec_res.exit_code}. {exec_res.test_results.get('failure_reason', '')}")
+            if exec_res.stderr.strip():
+                st.code(exec_res.stderr.strip(), language="text")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  15. PAGE 7: HISTORY & REPORTS
@@ -1931,14 +2370,41 @@ def render_settings():
     with col_m3:
         val_m = st.text_input("LLM 3 (Validator)", value=st.session_state.val_model_setting)
 
-    st.markdown("#### 3. Workflow Guardrails")
+    st.markdown("#### 3. Orchestration Engine & Workflow Guardrails")
+    col_eng, col_temp = st.columns(2)
+    with col_eng:
+        eng_idx = 0 if st.session_state.orchestrator_engine_setting == "langgraph" else 1
+        sel_eng = st.selectbox(
+            "Default Orchestrator Engine",
+            ["LangGraph StateGraph", "Direct Controller"],
+            index=eng_idx,
+            help="Choose LangGraph StateGraph (cyclic multi-agent graph with typed state) or Direct Controller",
+        )
+    with col_temp:
+        temp = st.slider("Model Temperature", 0.0, 0.8, value=st.session_state.temperature_setting, step=0.05)
+
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         retries = st.slider("Max Review Iterations", 1, 5, value=st.session_state.max_retries_setting)
-        temp = st.slider("Temperature", 0.0, 0.8, value=st.session_state.temperature_setting, step=0.05)
     with col_g2:
         sb_enabled = st.checkbox("Subprocess Sandbox Execution", value=st.session_state.sandbox_enabled)
         ast_enabled = st.checkbox("AST Syntax Verification", value=st.session_state.ast_syntax_enabled)
+
+    st.markdown("#### 4. Security & Isolation Safeguards")
+    st.markdown("""
+    <div style="background:var(--bg-surface-alt);padding:1rem;border-radius:8px;border:1px solid var(--border-subtle);font-size:0.85rem;color:var(--text-secondary);">
+        <strong>Enforced Workspace Quotas:</strong><br/>
+        • <strong>ZIP Archive Limit:</strong> 15 MB max compressed archive size.<br/>
+        • <strong>Module Size Limit:</strong> 2 MB max per individual source file.<br/>
+        • <strong>Workspace File Count:</strong> 150 files maximum per project manifest.<br/>
+        • <strong>Execution Timeout:</strong> 5.0 seconds subprocess kill timer.<br/>
+        • <strong>Zip Slip Protection:</strong> Path traversal check rejects <code>../</code> and absolute destinations.<br/>
+        • <strong>Secret Exclusion:</strong> Automatically ignores <code>.env</code>, <code>.git</code>, <code>__pycache__</code>, and private keys.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("#### 5. Local-First Privacy Guarantee")
+    st.info("🔒 **100% Local Inference Guarantee:** OpenReview AI communicates strictly with your local Ollama instance (`http://localhost:11434`) or the offline Smart Simulator. No proprietary cloud LLM APIs (OpenAI, Anthropic, etc.) are configured or invoked. Source code never leaves your local workstation.")
 
     st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
 
@@ -1947,6 +2413,7 @@ def render_settings():
         st.session_state.gen_model_setting = gen_m.strip()
         st.session_state.rev_model_setting = rev_m.strip()
         st.session_state.val_model_setting = val_m.strip()
+        st.session_state.orchestrator_engine_setting = "langgraph" if sel_eng == "LangGraph StateGraph" else "direct"
         st.session_state.max_retries_setting = retries
         st.session_state.temperature_setting = temp
         st.session_state.sandbox_enabled = sb_enabled
@@ -1960,6 +2427,7 @@ def render_settings():
 PAGES = {
     "Dashboard": render_dashboard,
     "New Code Task": render_new_code_task,
+    "Upload Project": render_upload_project,
     "Live Workflow": render_live_workflow,
     "Code Comparison": render_code_comparison,
     "Review Results": render_review_results,
