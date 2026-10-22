@@ -142,6 +142,38 @@ if __name__ == '__main__':
     assert safe_evaluate("{'status': 'ok'}") == {'status': 'ok'}
     print("Safe evaluation passed security assertions!")
 '''
+        elif "duplicate" in user_prompt.lower() or "find_duplicates" in user_prompt.lower() or "o(n^2)" in user_prompt.lower():
+            fixed_code = '''from typing import List, Any, Set
+
+def find_duplicates(items: List[Any]) -> List[Any]:
+    """
+    Improvised O(N) duplicate detector using hash sets.
+    Replaces naive quadratic O(N^2) nested loops with linear time complexity.
+    Preserves original order of first duplicate occurrence.
+    """
+    if not items:
+        return []
+        
+    seen: Set[Any] = set()
+    duplicates: Set[Any] = set()
+    ordered_duplicates: List[Any] = []
+    
+    for item in items:
+        if item in seen:
+            if item not in duplicates:
+                duplicates.add(item)
+                ordered_duplicates.append(item)
+        else:
+            seen.add(item)
+            
+    return ordered_duplicates
+
+if __name__ == '__main__':
+    assert find_duplicates([1, 2, 3, 2, 4, 3, 5]) == [2, 3]
+    assert find_duplicates([]) == []
+    assert find_duplicates([1, 2, 3]) == []
+    print("Performance-optimized O(N) duplicate detector verified!")
+'''
         elif "factorial" in user_prompt.lower():
             fixed_code = '''def factorial(n: int) -> int:
     """
@@ -221,8 +253,36 @@ if __name__ == '__main__':
             }
             return f"Security review identified critical vulnerabilities:\n\n```json\n{json.dumps(review_json, indent=2)}\n```"
 
+        # Check for quadratic performance bottlenecks on uploaded code
+        if ("duplicate" in user_prompt.lower() or "o(n^2)" in user_prompt.lower() or "nested" in user_prompt.lower()) and "seen" not in user_prompt:
+            review_json = {
+                "has_bugs": True,
+                "status": "CHANGES_REQUESTED",
+                "overall_score": 4,
+                "summary": "PERFORMANCE BOTTLENECK: Quadratic O(N^2) complexity detected. Code requires algorithmic improvisation.",
+                "bugs": [
+                    {
+                        "line_number": 4,
+                        "category": "PERFORMANCE",
+                        "severity": "CRITICAL",
+                        "description": "Nested iteration over collection results in quadratic O(N^2) runtime, causing severe latency on large payloads.",
+                        "suggested_fix": "Improvise algorithm to O(N) using a hash set for single-pass lookup."
+                    },
+                    {
+                        "line_number": 2,
+                        "category": "STYLE",
+                        "severity": "MINOR",
+                        "description": "Missing type annotations and docstring documentation.",
+                        "suggested_fix": "Add typing.List and descriptive docstring."
+                    }
+                ]
+            }
+            return f"Reviewer detected performance bottlenecks requiring improvisation:\n\n```json\n{json.dumps(review_json, indent=2)}\n```"
+
         # If code already contains proper edge-case handling or defensive checks:
-        if "isinstance(" in user_prompt or "cleaned = " in user_prompt or "raise ValueError" in user_prompt or "ast.literal_eval" in user_prompt:
+        if ("isinstance(" in user_prompt or "cleaned = " in user_prompt or 
+            "raise ValueError" in user_prompt or "ast.literal_eval" in user_prompt or 
+            "seen: Set" in user_prompt or "seen = set()" in user_prompt):
             review_json = {
                 "has_bugs": False,
                 "status": "APPROVED",

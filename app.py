@@ -924,6 +924,126 @@ SCENARIO_PRESETS = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  6B. PRESETS FOR CODE UPLOAD & IMPROVISATION / REFACTORING
+# ─────────────────────────────────────────────────────────────────────────────
+IMPROVISE_PRESETS = {
+    "🛡️ Security Hardening (Fix CWE-95 eval, traversal, injections)": {
+        "title": "Security Hardening",
+        "badge": "CWE-95 / Injection Defense",
+        "description": "Scrutinize and remediate dangerous vulnerabilities, unsafe eval/exec, path traversal, and unhandled exceptions.",
+        "sample_code": (
+            "# Vulnerable script with arbitrary code execution and missing input validation\n"
+            "def evaluate_query(raw_expr):\n"
+            "    # CRITICAL: CWE-95 Remote Code Execution\n"
+            "    return eval(raw_expr)\n\n"
+            "def read_file(name):\n"
+            "    # CRITICAL: Path traversal risk\n"
+            "    return open('/data/' + name).read()\n\n"
+            "def divide(a, b):\n"
+            "    # Missing ZeroDivisionError and TypeError guards\n"
+            "    return a / b\n"
+        ),
+        "prompt": (
+            "Improvise and audit this code: eliminate security vulnerabilities (replace unsafe eval with safe AST parser, "
+            "neutralize path traversal), harden edge-case guards (ZeroDivisionError, None inputs), add type annotations, and fix all defects."
+        ),
+        "tests": (
+            "try:\n"
+            "    evaluate_query('__import__(\"os\").system(\"echo hacked\")')\n"
+            "    assert False, 'Should prevent arbitrary code execution'\n"
+            "except Exception:\n"
+            "    pass"
+        ),
+    },
+    "⚡ Performance & Algorithmic Optimization (O(N²) ➔ O(N))": {
+        "title": "Performance Optimization",
+        "badge": "Algorithmic Speedup",
+        "description": "Eliminate quadratic bottlenecks, redundant iteration, and reduce memory overhead using optimal data structures.",
+        "sample_code": (
+            "# Inefficient quadratic duplicate finder\n"
+            "def find_duplicates(items):\n"
+            "    # O(N^2) nested loop causes severe latency on large datasets\n"
+            "    dups = []\n"
+            "    for i in range(len(items)):\n"
+            "        for j in range(i + 1, len(items)):\n"
+            "            if items[i] == items[j] and items[i] not in dups:\n"
+            "                dups.append(items[i])\n"
+            "    return dups\n"
+        ),
+        "prompt": (
+            "Improvise and optimize this code: eliminate the quadratic O(N^2) nested loop bottleneck, "
+            "refactor to linear O(N) time complexity using hash sets/maps, add typing annotations, and preserve first-seen order."
+        ),
+        "tests": (
+            "assert find_duplicates([1, 2, 3, 2, 4, 3, 5]) == [2, 3]\n"
+            "assert find_duplicates([]) == []\n"
+            "assert find_duplicates([1, 2, 3]) == []"
+        ),
+    },
+    "🧹 Clean Code, Modernization & PEP 8 Refactoring": {
+        "title": "Clean Code & Modernization",
+        "badge": "PEP 8 & Typing",
+        "description": "Refactor monolithic functions into clean, modular, typed, and well-documented Pythonic code.",
+        "sample_code": (
+            "# Untyped monolithic function with cryptic variable names and zero docstrings\n"
+            "def p_data(d, f=None):\n"
+            "    r = []\n"
+            "    for x in d:\n"
+            "        if f and not f(x):\n"
+            "            continue\n"
+            "        r.append(x * 2)\n"
+            "    return r\n"
+        ),
+        "prompt": (
+            "Improvise and refactor this code: modernize syntax, add comprehensive typing annotations (List, Optional, Callable), "
+            "provide descriptive function/parameter naming, add Google-style docstrings, and handle None input safely."
+        ),
+        "tests": (
+            "assert p_data([1, 2, 3]) == [2, 4, 6]\n"
+            "assert p_data([]) == []\n"
+            "assert p_data([1, 2, 3], lambda x: x % 2 == 1) == [2, 6]"
+        ),
+    },
+    "🧪 Test-Driven Hardening & Boundary Defense": {
+        "title": "Robustness & Edge-Cases",
+        "badge": "Defensive Architecture",
+        "description": "Fortify functions against boundary violations, negative numbers, extreme inputs, and type mismatches.",
+        "sample_code": (
+            "# Function lacking defensive boundary guards\n"
+            "def calculate_discount(price, discount_rate):\n"
+            "    # Missing checks for negative price, discount > 1.0, and non-numeric inputs\n"
+            "    return price - (price * discount_rate)\n"
+        ),
+        "prompt": (
+            "Improvise this code to handle all edge cases: reject negative prices, validate discount rate in range [0.0, 1.0], "
+            "validate numeric types, handle None/invalid inputs, and add comprehensive assertions."
+        ),
+        "tests": (
+            "assert calculate_discount(100, 0.1) == 90.0\n"
+            "try:\n"
+            "    calculate_discount(-50, 0.2)\n"
+            "    assert False, 'Negative price must raise ValueError'\n"
+            "except ValueError:\n"
+            "    pass"
+        ),
+    },
+    "🛠️ Custom Improvisation & Architecture Redesign": {
+        "title": "Custom Improvisation",
+        "badge": "User Defined",
+        "description": "Upload any custom script and specify your exact improvement or refactoring goals.",
+        "sample_code": (
+            "# Paste your Python code here to improvise\n"
+            "def process_pipeline(data):\n"
+            "    return [item.strip() for item in data if item]\n"
+        ),
+        "prompt": (
+            "Audit and improvise this code: improve architecture, handle edge cases, add type annotations, and write unit tests."
+        ),
+        "tests": "",
+    },
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  7. SIDEBAR NAVIGATION COMPONENT
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -1173,25 +1293,26 @@ def render_new_code_task():
 
     with col_l:
         st.markdown("#### 1. Task Definition")
-        selected_scenario_name = st.selectbox(
-            "Select Engineering Scenario Preset",
-            list(SCENARIO_PRESETS.keys()),
-            index=0,
-            help="Choose from pre-built scenarios across real engineering domains",
-        )
-        preset = SCENARIO_PRESETS[selected_scenario_name]
 
         wf_input_mode = st.radio(
-            "Input Mode",
-            ["💡 Generate from Specification", "📂 Review & Auto-Fix Existing Code"],
+            "Workflow Input Mode",
+            ["💡 Generate from Specification", "🚀 Upload & Improvise Code"],
             horizontal=True,
-            label_visibility="collapsed",
+            help="Choose whether to generate new code from scratch or upload/paste existing code to audit and improvise."
         )
 
         task_prompt = ""
         existing_code = None
+        custom_tests = ""
 
         if "Generate" in wf_input_mode:
+            selected_scenario_name = st.selectbox(
+                "Select Engineering Scenario Preset",
+                list(SCENARIO_PRESETS.keys()),
+                index=0,
+                help="Choose from pre-built scenarios across real engineering domains",
+            )
+            preset = SCENARIO_PRESETS[selected_scenario_name]
             task_prompt = st.text_area(
                 "Task Specification & Requirements",
                 value=preset["prompt"],
@@ -1208,27 +1329,96 @@ def render_new_code_task():
                     placeholder="assert my_func(input) == expected_output",
                 )
         else:
-            st.info("Upload or paste any Python script to audit for bugs, security vulnerabilities, and logic flaws.")
-            up_file = st.file_uploader("Upload .py file", type=["py"])
-            default_pasted = (
-                "# Code with multiple vulnerabilities\n"
-                "def evaluate_query(raw_expr):\n"
-                "    return eval(raw_expr)  # CWE-95 Vulnerability\n\n"
-                "def read_file(name):\n"
-                "    return open('/data/' + name).read()  # Path traversal\n\n"
-                "def divide(a, b):\n"
-                "    return a / b  # Missing ZeroDivision check\n"
+            # ── Upload & Improvise Mode ──
+            st.markdown(
+                '<div style="font-size:0.86rem;color:var(--text-secondary);margin-bottom:0.7rem;line-height:1.5;">'
+                'Upload an existing Python script or paste code below. The multi-LLM team will analyze the code, '
+                'detect vulnerabilities, security flaws & performance bottlenecks, and autonomously rewrite an <strong>improved & verified version</strong>.'
+                '</div>',
+                unsafe_allow_html=True
             )
+
+            # Improvisation Objective
+            selected_impr_name = st.selectbox(
+                "🎯 Improvisation Objective & Strategy",
+                list(IMPROVISE_PRESETS.keys()),
+                index=0,
+                help="Select your primary improvement goal (Security, Performance O(N), Clean Refactor, or Custom)"
+            )
+            impr_preset = IMPROVISE_PRESETS[selected_impr_name]
+
+            st.caption(f"💡 **Strategy:** {impr_preset['description']}")
+
+            # Code source selector: Upload file vs Use Preset Sample vs Paste
+            code_src_mode = st.radio(
+                "Code Source",
+                ["⚡ Preset Sample Code", "📁 Upload File (.py, .txt, .pyw)", "✍️ Paste Custom Code"],
+                horizontal=True,
+            )
+
+            initial_code_to_show = impr_preset["sample_code"]
+
+            if "Upload File" in code_src_mode:
+                up_file = st.file_uploader("Upload Python script to improvise", type=["py", "txt", "pyw"], key="file_upload_input")
+                if up_file:
+                    try:
+                        uploaded_text = up_file.getvalue().decode("utf-8")
+                        initial_code_to_show = uploaded_text
+                        st.success(f"📄 Loaded `{up_file.name}` ({len(uploaded_text.splitlines())} lines, {len(uploaded_text)} bytes)")
+                    except Exception as e:
+                        st.error(f"Failed to read uploaded file: {e}")
+                else:
+                    st.info("👆 Select a `.py` file from your computer to inspect and improvise.")
+            elif "Paste" in code_src_mode:
+                initial_code_to_show = "# Paste your Python code here to improvise\n"
+
             existing_code = st.text_area(
-                "Paste Python code",
-                value=up_file.getvalue().decode("utf-8") if up_file else default_pasted,
+                "Source Code to Improvise",
+                value=initial_code_to_show,
                 height=180,
+                help="Edit or review the code that will be inspected and improved by the multi-LLM team."
             )
-            task_prompt = (
-                "Audit this code for security vulnerabilities (CWE-95, path traversal), "
-                "edge case bugs (ZeroDivisionError, None inputs), add type annotations, and fix all defects."
+
+            # Instant Static AST Pre-Check Badge
+            if existing_code and existing_code.strip():
+                import ast
+                try:
+                    parsed_tree = ast.parse(existing_code)
+                    fn_count = sum(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(parsed_tree))
+                    class_count = sum(isinstance(n, ast.ClassDef) for n in ast.walk(parsed_tree))
+                    line_count = len(existing_code.splitlines())
+                    st.markdown(
+                        f'<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.25rem;margin-bottom:0.6rem;">'
+                        f'<span class="pro-pill pill-online">🟢 AST Syntax: Valid</span>'
+                        f'<span class="pro-pill pill-simulator">Lines: {line_count}</span>'
+                        f'<span class="pro-pill pill-simulator">Functions: {fn_count}</span>'
+                        f'<span class="pro-pill pill-simulator">Classes: {class_count}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+                except SyntaxError as syn_err:
+                    st.markdown(
+                        f'<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.25rem;margin-bottom:0.6rem;">'
+                        f'<span class="pro-pill pill-danger">🔴 Syntax Notice (Line {syn_err.lineno}): {syn_err.msg}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+            task_prompt = st.text_area(
+                "Improvisation Requirements & Instructions for LLMs",
+                value=impr_preset["prompt"],
+                height=90,
+                help="Instructions passed to LLM 1, 2, and 3 for auditing and refactoring."
             )
-            custom_tests = ""
+
+            with st.expander("🧪 Automated Test Assertions (Executed in sandbox to verify improvisation)", expanded=bool(impr_preset["tests"])):
+                custom_tests = st.text_area(
+                    "Custom Assertions / Pytest code",
+                    value=impr_preset["tests"],
+                    height=80,
+                    label_visibility="collapsed",
+                    placeholder="assert my_func(input) == expected_output",
+                )
 
     with col_r:
         st.markdown("#### 2. Workflow Parameters")
@@ -1462,11 +1652,27 @@ def render_code_comparison():
 
     # Iteration selection
     r_options = list(range(len(res.iterations)))
+    is_uploaded = any("Loaded existing" in (it.generator_explanation or "") for it in res.iterations)
+    
+    def _fmt_baseline(x: int) -> str:
+        if x == 0 and is_uploaded:
+            return "Iteration 1 (Original Uploaded Code)"
+        if x == 0:
+            return "Iteration 1 (Initial Generation)"
+        return f"Iteration {x+1}"
+
+    def _fmt_revised(x: int) -> str:
+        if x == len(r_options) - 1 and is_uploaded:
+            return f"Iteration {x+1} (Final Improvised Code)"
+        if x == len(r_options) - 1:
+            return f"Iteration {x+1} (Latest Approved)"
+        return f"Iteration {x+1}"
+
     c1, c2 = st.columns(2)
     with c1:
-        idx_a = st.selectbox("Baseline Version", r_options, index=0, format_func=lambda x: f"Iteration {x+1}")
+        idx_a = st.selectbox("Baseline Version", r_options, index=0, format_func=_fmt_baseline)
     with c2:
-        idx_b = st.selectbox("Revised Version", r_options, index=len(r_options)-1, format_func=lambda x: f"Iteration {x+1} (Latest)")
+        idx_b = st.selectbox("Revised Version", r_options, index=len(r_options)-1, format_func=_fmt_revised)
 
     code_a = res.iterations[idx_a].code
     code_b = res.iterations[idx_b].code

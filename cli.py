@@ -39,6 +39,14 @@ def main():
     parser = argparse.ArgumentParser(description="Multi-LLM Code Review and Correction Engine")
     parser.add_argument("--prompt", "-p", type=str, help="Coding task requirement")
     parser.add_argument("--file", "-f", type=str, default=None, help="Existing Python file path to review and auto-fix")
+    parser.add_argument(
+        "--improvise",
+        "-i",
+        type=str,
+        default=None,
+        choices=["security", "performance", "refactor", "tests"],
+        help="Improvisation objective for uploaded/existing code (security, performance, refactor, tests)",
+    )
     parser.add_argument("--provider", type=str, default=None, choices=["ollama", "huggingface", "openai_compat", "mock"], help="LLM Provider")
     parser.add_argument("--generator", "-g", type=str, default=None, help="LLM 1 (Generator) Model Name")
     parser.add_argument("--reviewer", "-r", type=str, default=None, help="LLM 2 (Reviewer) Model Name")
@@ -50,6 +58,13 @@ def main():
     parser.add_argument("--professor-mode", action="store_true", help="Enable Professor Mode with formal verification telemetry and math metrics")
 
     args = parser.parse_args()
+
+    CLI_IMPROVISE_GOALS = {
+        "security": "Improvise and audit code: neutralize all security vulnerabilities (CWE-95 eval, traversal), sanitize inputs, and harden boundary guards.",
+        "performance": "Improvise and optimize code: eliminate quadratic O(N^2) bottlenecks, minimize space complexity, and optimize data structures.",
+        "refactor": "Improvise and refactor code: adhere to PEP 8, add complete typing annotations, descriptive docstrings, and modular structure.",
+        "tests": "Improvise code robustness: handle all boundary cases, type edge-cases, None inputs, and add comprehensive assertions.",
+    }
 
     existing_code = None
     if args.file:
@@ -85,7 +100,10 @@ def main():
     if not args.demo:
         task_prompt = args.prompt
         if not task_prompt:
-            if existing_code:
+            if args.improvise:
+                task_prompt = CLI_IMPROVISE_GOALS.get(args.improvise, f"Audit and improvise code from file: {args.file}")
+                console.print(f"[bold cyan][IMPROVISE] Strategy selected: {args.improvise.upper()}[/bold cyan]")
+            elif existing_code:
                 task_prompt = f"Audit and repair code from file: {args.file}"
             else:
                 console.print("\n[bold yellow]Enter your coding task specification:[/bold yellow]")
