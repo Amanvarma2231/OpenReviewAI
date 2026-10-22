@@ -121,9 +121,35 @@ python cli.py --demo
 # With custom prompt
 python cli.py --prompt "Write a python function to find the longest common prefix among strings."
 
+# Upload an existing Python file and improvise its performance O(N^2) -> O(N)
+python cli.py --file examples/sample_slow_duplicate.py --improvise performance
+
+# Upload an existing file and harden security / fix vulnerabilities
+python cli.py --file my_script.py --improvise security
+
+# Upload and provide custom improvisation instructions
+python cli.py --file legacy.py --prompt "Refactor into clean modular functions with complete type annotations"
+
 # Using local Ollama with Qwen and DeepSeek
 python cli.py --provider ollama --generator "qwen2.5:0.5b" --reviewer "deepseek-coder:1.3b"
 ```
+
+---
+
+## 🚀 Upload Code & Improvise Workflow
+
+OpenReviewAI supports uploading existing codebases or scripts for automated review and improvisation:
+
+1. **Upload or Paste Code**: Drag and drop `.py`, `.txt`, or `.pyw` scripts into the Web Studio or pass via `--file` in CLI.
+2. **Select Improvisation Objective**:
+   - 🛡️ **Security Hardening**: Remediate CWE-95 eval, path traversal, and injection flaws.
+   - ⚡ **Performance & Algorithmic Optimization**: Refactor quadratic $O(N^2)$ loops to linear $O(N)$ with hash sets/maps.
+   - 🧹 **Clean Code & Modernization**: Add PEP 8 adherence, Python typing (`typing.List`, `Optional`), and docstrings.
+   - 🧪 **Test-Driven Hardening**: Boundary guards, None-handling, and automated test suite generation.
+   - 🛠️ **Custom Improvisation**: Provide custom natural language refactoring requirements.
+3. **Live AST Syntax Analysis**: Real-time validation checks for syntax errors, function counts, and class definitions.
+4. **Autonomous Multi-Agent Loop**: LLM 2 reviews, LLM 3 validates security, and LLM 1 iteratively refactors.
+5. **Unified Diff & Side-by-Side Comparison**: Review exact before-and-after line changes between Original Uploaded Code and Final Improvised Code.
 
 ---
 
