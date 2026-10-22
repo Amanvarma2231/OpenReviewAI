@@ -8,7 +8,8 @@ from openreview_ai.schema import (
     AgentMessage,
     ReviewFeedback,
     ExecutionResult,
-    ReviewStatus
+    ReviewStatus,
+    AcceptanceStatus
 )
 from openreview_ai.agents.generator import CodeGeneratorAgent
 from openreview_ai.agents.reviewer import CodeReviewerAgent
@@ -275,6 +276,21 @@ class WorkflowOrchestrator:
             ))
             emit("fix_completed", {"round": next_round, "code": fixed_code, "summary": explanation})
 
+        # Determine explicit acceptance and testing status (never claim false PASS)
+        if not unit_tests:
+            computed_test_status = "NOT_RUN"
+        elif state.execution_result and state.execution_result.success:
+            computed_test_status = "TESTS_PASSED"
+        else:
+            computed_test_status = "TESTS_FAILED"
+
+        if state.is_approved:
+            computed_acc_status = AcceptanceStatus.FINAL_ACCEPTED
+        elif state.final_status == "MAX_RETRIES_REACHED":
+            computed_acc_status = AcceptanceStatus.RETRY_LIMIT_REACHED
+        else:
+            computed_acc_status = AcceptanceStatus.PARTIAL
+
         # Final Result Compilation
         final_result = WorkflowResult(
             task_prompt=task_prompt,
@@ -290,7 +306,9 @@ class WorkflowOrchestrator:
             generator_model=self.generator.model_name,
             reviewer_model=self.reviewer.model_name,
             validator_model=self.validator.model_name if self.validator else None,
-            provider=self.config.provider_type
+            provider=self.config.provider_type,
+            acceptance_status=computed_acc_status,
+            test_status=computed_test_status
         )
 
         emit("workflow_completed", {

@@ -28,6 +28,20 @@ class ReviewStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class AcceptanceStatus(str, Enum):
+    REVIEW_PASSED = "REVIEW_PASSED"
+    SYNTAX_PASSED = "SYNTAX_PASSED"
+    STATIC_ANALYSIS_PASSED = "STATIC_ANALYSIS_PASSED"
+    TESTS_PASSED = "TESTS_PASSED"
+    VALIDATION_PASSED = "VALIDATION_PASSED"
+    COMPLETED = "COMPLETED"
+    FINAL_ACCEPTED = "FINAL_ACCEPTED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    RETRY_LIMIT_REACHED = "RETRY_LIMIT_REACHED"
+    NOT_RUN = "NOT_RUN"
+
+
 class BugItem(BaseModel):
     id: str = Field(default_factory=lambda: f"BUG-{datetime.now().strftime('%M%S%f')[:8]}")
     line_number: Optional[int] = None
@@ -95,6 +109,8 @@ class WorkflowResult(BaseModel):
     reviewer_model: str
     validator_model: Optional[str] = None
     provider: str = "ollama"
+    acceptance_status: AcceptanceStatus = AcceptanceStatus.NOT_RUN
+    test_status: str = "NOT_RUN"
 
 
 class ReviewState(BaseModel):
@@ -119,3 +135,5 @@ class ReviewState(BaseModel):
     is_approved: bool = False
     is_finished: bool = False
     final_status: str = "PENDING"
+    acceptance_status: AcceptanceStatus = AcceptanceStatus.NOT_RUN
+    test_status: str = "NOT_RUN"
