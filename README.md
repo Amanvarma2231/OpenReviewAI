@@ -299,7 +299,7 @@ Click the button below to automatically provision OpenReview AI on Render:
    - `STREAMLIT_SERVER_HEADLESS`: `true`
    - `STREAMLIT_SERVER_ENABLE_CORS`: `false`
    - `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION`: `false`
-5. Click **Create Web Service**. Render will deploy the application and give you a public URL like `https://openreview-ai.onrender.com`.
+5. Click **Create Web Service**. Render will deploy the application and give you a public URL: `https://openreviewai-1.onrender.com`.
 
 ---
 
